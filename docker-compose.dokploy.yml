@@ -47,7 +47,7 @@ services:
     depends_on:
       - goclaw
     ports:
-      - "${GOCLAW_UI_PORT:-31880}:80"
+      - "${GOCLAW_UI_PORT:-32180}:80"
     networks:
       - goclaw-internal
     restart: unless-stopped
