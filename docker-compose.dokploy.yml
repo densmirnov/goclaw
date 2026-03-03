@@ -38,7 +38,7 @@ services:
       - goclaw-skills:/app/skills
     restart: unless-stopped
 
-  goclaw-ui:
+  web:
     build:
       context: ./ui/web
       dockerfile: Dockerfile
