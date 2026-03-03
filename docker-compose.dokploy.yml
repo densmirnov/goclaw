@@ -44,6 +44,8 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - goclaw
+    ports:
+      - "${GOCLAW_UI_PORT:-31880}:80"
     restart: unless-stopped
 
 volumes:
