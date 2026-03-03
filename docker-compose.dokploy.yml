@@ -35,6 +35,8 @@ services:
       - goclaw-data:/app/data
       - goclaw-workspace:/app/.goclaw
       - goclaw-skills:/app/skills
+    ports:
+      - "${GOCLAW_PORT:-18790}:18790"
     restart: unless-stopped
 
   api:
