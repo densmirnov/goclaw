@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-goclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goclaw}
+      POSTGRES_DB: ${POSTGRES_DB:-goclaw}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goclaw} -d ${POSTGRES_DB:-goclaw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  goclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ENABLE_OTEL: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      GOCLAW_MODE: managed
+      GOCLAW_HOST: 0.0.0.0
+      GOCLAW_PORT: 18790
+      GOCLAW_CONFIG: /app/data/config.json
+      GOCLAW_POSTGRES_DSN: postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
+      GOCLAW_GATEWAY_TOKEN: ${GOCLAW_GATEWAY_TOKEN:-}
+      GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY:-}
+      GOCLAW_OWNER_IDS: ${GOCLAW_OWNER_IDS:-}
+      GOCLAW_PROVIDER: ${GOCLAW_PROVIDER:-groq}
+      GOCLAW_MODEL: ${GOCLAW_MODEL:-${GOCLAW_GROQ_MODEL:-moonshotai/kimi-k2-instruct-0905}}
+      GOCLAW_GROQ_API_KEY: ${GOCLAW_GROQ_API_KEY:-}
+      GOCLAW_TELEGRAM_TOKEN: ${GOCLAW_TELEGRAM_TOKEN:-}
+      GOCLAW_TRACE_VERBOSE: ${GOCLAW_TRACE_VERBOSE:-0}
+    volumes:
+      - goclaw-data:/app/data
+      - goclaw-workspace:/app/.goclaw
+      - goclaw-skills:/app/skills
+    restart: unless-stopped
+
+  goclaw-ui:
+    build:
+      context: ./ui/web
+      dockerfile: Dockerfile
+    depends_on:
+      - goclaw
+    ports:
+      - "${GOCLAW_UI_PORT:-3000}:80"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  goclaw-data:
+  goclaw-workspace:
+  goclaw-skills:
