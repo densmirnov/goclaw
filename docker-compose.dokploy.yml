@@ -7,11 +7,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-goclaw}
     volumes:
       - postgres-data:/var/lib/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goclaw}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
     restart: unless-stopped
 
   goclaw:
@@ -22,7 +17,7 @@ services:
         ENABLE_OTEL: "false"
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
     env_file:
       - .env
     environment:
