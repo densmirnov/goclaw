@@ -19,11 +19,10 @@ services:
       postgres:
         condition: service_started
     environment:
-      GOCLAW_MODE: managed
+      GOCLAW_MODE: standalone
       GOCLAW_HOST: 0.0.0.0
       GOCLAW_PORT: 18790
       GOCLAW_CONFIG: /app/data/config.json
-      GOCLAW_POSTGRES_DSN: postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
       GOCLAW_GATEWAY_TOKEN: ${GOCLAW_GATEWAY_TOKEN:-}
       GOCLAW_ENCRYPTION_KEY: ${GOCLAW_ENCRYPTION_KEY:-}
       GOCLAW_OWNER_IDS: ${GOCLAW_OWNER_IDS:-}
