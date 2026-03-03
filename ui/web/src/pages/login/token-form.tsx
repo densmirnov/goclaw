@@ -33,6 +33,15 @@ export function TokenForm({ onSubmit }: TokenFormProps) {
       }
 
       if (!res.ok) {
+        // Standalone mode doesn't expose managed REST endpoints like /v1/agents.
+        // Fallback to /health so token login still works behind WS auth.
+        if (res.status === 404) {
+          const health = await fetch("/health");
+          if (health.ok) {
+            onSubmit(userId.trim(), token.trim());
+            return;
+          }
+        }
         setError(`Server returned ${res.status}. Please try again.`);
         return;
       }
@@ -55,7 +64,10 @@ export function TokenForm({ onSubmit }: TokenFormProps) {
           id="userId"
           type="text"
           value={userId}
-          onChange={(e) => { setUserId(e.target.value); setError(null); }}
+          onChange={(e) => {
+            setUserId(e.target.value);
+            setError(null);
+          }}
           placeholder="your-user-id"
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           autoFocus
@@ -71,7 +83,10 @@ export function TokenForm({ onSubmit }: TokenFormProps) {
           id="token"
           type="password"
           value={token}
-          onChange={(e) => { setToken(e.target.value); setError(null); }}
+          onChange={(e) => {
+            setToken(e.target.value);
+            setError(null);
+          }}
           placeholder="Bearer token"
           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           disabled={connecting}
