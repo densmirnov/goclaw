@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-goclaw}
     volumes:
       - postgres-data:/var/lib/postgresql
+    networks:
+      - goclaw-internal
     restart: unless-stopped
 
   goclaw:
@@ -34,6 +36,8 @@ services:
       - goclaw-data:/app/data
       - goclaw-workspace:/app/.goclaw
       - goclaw-skills:/app/skills
+    networks:
+      - goclaw-internal
     restart: unless-stopped
 
   api:
@@ -43,7 +47,9 @@ services:
     depends_on:
       - goclaw
     ports:
-      - "${GOCLAW_UI_PORT:-31880}:80"
+      - "${GOCLAW_UI_PORT:-32080}:80"
+    networks:
+      - goclaw-internal
     restart: unless-stopped
 
 volumes:
@@ -51,3 +57,8 @@ volumes:
   goclaw-data:
   goclaw-workspace:
   goclaw-skills:
+
+networks:
+  goclaw-internal:
+    driver: bridge
+    internal: true
