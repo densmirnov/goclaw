@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -53,6 +54,30 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 	// processNormalMessage handles routing, scheduling, and response delivery for a single
 	// (possibly merged) inbound message. Called directly by the debouncer's flush callback.
 	processNormalMessage := func(msg bus.InboundMessage) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("inbound: panic while processing message",
+					"channel", msg.Channel,
+					"chat_id", msg.ChatID,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+				// Best-effort cleanup to avoid stale "Thinking..." placeholders.
+				cleanupMeta := map[string]string{}
+				for _, k := range []string{"message_thread_id", "local_key", "placeholder_key", "group_id"} {
+					if v := msg.Metadata[k]; v != "" {
+						cleanupMeta[k] = v
+					}
+				}
+				msgBus.PublishOutbound(bus.OutboundMessage{
+					Channel:  msg.Channel,
+					ChatID:   msg.ChatID,
+					Content:  "",
+					Metadata: cleanupMeta,
+				})
+			}
+		}()
+
 		// Determine target agent via bindings or explicit AgentID
 		agentID := msg.AgentID
 		if agentID == "" {
