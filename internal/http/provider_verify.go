@@ -49,8 +49,14 @@ func (h *ProvidersHandler) handleVerifyProvider(w http.ResponseWriter, r *http.R
 
 	provider, err := h.providerReg.Get(p.Name)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "error": "provider not registered: " + p.Name})
-		return
+		// Resync from DB on-demand (covers gateway restarts where DB providers
+		// exist but were not registered into the in-memory provider registry yet).
+		h.registerInMemory(p)
+		provider, err = h.providerReg.Get(p.Name)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "error": "provider not registered: " + p.Name})
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

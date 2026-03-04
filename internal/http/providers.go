@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -123,7 +124,7 @@ func (h *ProvidersHandler) handleCreateProvider(w http.ResponseWriter, r *http.R
 
 	if err := h.store.CreateProvider(r.Context(), &p); err != nil {
 		slog.Error("providers.create", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeProviderError(w, err)
 		return
 	}
 
@@ -132,6 +133,25 @@ func (h *ProvidersHandler) handleCreateProvider(w http.ResponseWriter, r *http.R
 
 	maskAPIKey(&p)
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// writeProviderError maps low-level provider store errors to user-facing HTTP errors.
+func writeProviderError(w http.ResponseWriter, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unknown provider error"})
+		return
+	}
+
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint") || strings.Contains(msg, "already exists") {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "provider with this name already exists"})
+		return
+	}
+	if strings.Contains(msg, "encrypt api key") || strings.Contains(msg, "encryption key must be 32 bytes") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid GOCLAW_ENCRYPTION_KEY: must be 32 bytes (raw/base64/hex)"})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 }
 
 func (h *ProvidersHandler) handleGetProvider(w http.ResponseWriter, r *http.Request) {

@@ -95,9 +95,15 @@ func (c *Channel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	}
 
 	// Parse raw Telegram chat ID (strips :topic:N suffix).
-	chatID, err := parseRawChatID(localKey)
+	// Prefer canonical ChatID from outbound payload. localKey may include
+	// transient routing suffixes and should only drive in-memory state lookup.
+	chatID, err := parseRawChatID(msg.ChatID)
 	if err != nil {
-		return fmt.Errorf("invalid chat ID: %w", err)
+		// Fallback for legacy callers that pass composite keys in ChatID/localKey.
+		chatID, err = parseRawChatID(localKey)
+		if err != nil {
+			return fmt.Errorf("invalid chat ID: %w", err)
+		}
 	}
 
 	// Parse reply/thread IDs from metadata.
