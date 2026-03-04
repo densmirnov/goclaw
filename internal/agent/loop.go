@@ -633,6 +633,8 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		maxIter = req.MaxIterations
 	}
 
+	toolFreeMode := shouldUseToolFreeMode(req)
+
 	for iteration < maxIter {
 		iteration++
 
@@ -641,7 +643,11 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		// Build provider request with policy-filtered tools
 		var toolDefs []providers.ToolDefinition
 		var allowedTools map[string]bool
-		if l.toolPolicy != nil {
+		if toolFreeMode {
+			// Telegram short conversational turns should prefer immediate direct answers.
+			// Disabling tools here avoids unnecessary tool loops and timeout-prone retries.
+			toolDefs = nil
+		} else if l.toolPolicy != nil {
 			toolDefs = l.toolPolicy.FilterTools(l.tools, l.id, l.provider.Name(), l.agentToolPolicy, req.ToolAllow, false, false)
 			allowedTools = make(map[string]bool, len(toolDefs))
 			for _, td := range toolDefs {
@@ -1133,6 +1139,30 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		Media:        mediaResults,
 		Deliverables: deliverables,
 	}, nil
+}
+
+func shouldUseToolFreeMode(req RunRequest) bool {
+	if req.Channel != "telegram" || req.PeerKind != "direct" || len(req.Media) > 0 {
+		return false
+	}
+	msg := strings.TrimSpace(strings.ToLower(req.Message))
+	if msg == "" || len(msg) > 120 {
+		return false
+	}
+	if strings.Contains(msg, "http://") || strings.Contains(msg, "https://") {
+		return false
+	}
+	// Keep tools enabled for clearly task-oriented requests.
+	for _, kw := range []string{
+		"file", "read", "write", "edit", "code", "bug", "deploy", "trace",
+		"cron", "search", "find", "memory", "tool", "api", "url", "link",
+		"файл", "код", "ошиб", "депло", "трейс", "поиск", "памят", "инструмент",
+	} {
+		if strings.Contains(msg, kw) {
+			return false
+		}
+	}
+	return true
 }
 
 // compactMessagesInPlace summarizes the first ~70% of messages into a condensed
