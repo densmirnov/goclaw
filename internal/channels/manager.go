@@ -369,15 +369,12 @@ func (m *Manager) HandleAgentEvent(eventType, runID string, payload interface{})
 	if eventType == protocol.AgentEventRunRetrying {
 		attempt := extractPayloadString(payload, "attempt")
 		maxAttempts := extractPayloadString(payload, "maxAttempts")
-		retryMsg := fmt.Sprintf("Provider busy, retrying... (%s/%s)", attempt, maxAttempts)
-		m.bus.PublishOutbound(bus.OutboundMessage{
-			Channel: rc.ChannelName,
-			ChatID:  rc.ChatID,
-			Content: retryMsg,
-			Metadata: map[string]string{
-				"placeholder_update": "true",
-			},
-		})
+		slog.Info("provider retry",
+			"channel", rc.ChannelName,
+			"chat_id", rc.ChatID,
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+		)
 	}
 
 	// Forward to ReactionChannel

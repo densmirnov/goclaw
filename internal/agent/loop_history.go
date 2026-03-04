@@ -42,7 +42,7 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 	}
 
 	// Resolve context files once — also detect BOOTSTRAP.md presence.
-	contextFiles := l.resolveContextFiles(ctx, userID)
+	contextFiles := l.resolveContextFiles(ctx, userID, userMessage)
 	hadBootstrap := false
 	for _, cf := range contextFiles {
 		if cf.Path == bootstrap.BootstrapFile {
@@ -65,21 +65,21 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 	}
 
 	systemPrompt := BuildSystemPrompt(SystemPromptConfig{
-		AgentID:        l.id,
-		Model:          l.model,
-		Workspace:      promptWorkspace,
-		Channel:        channel,
-		OwnerIDs:       l.ownerIDs,
-		Mode:           mode,
-		ToolNames:      l.tools.List(),
-		SkillsSummary:  l.resolveSkillsSummary(skillFilter),
-		HasMemory:      l.hasMemory,
-		HasSpawn:       l.tools != nil && hasSpawn,
-		HasSkillSearch: hasSkillSearch,
-		ContextFiles:   contextFiles,
-		ExtraPrompt:    extraSystemPrompt,
-		SandboxEnabled:        l.sandboxEnabled,
-		SandboxContainerDir:   l.sandboxContainerDir,
+		AgentID:                l.id,
+		Model:                  l.model,
+		Workspace:              promptWorkspace,
+		Channel:                channel,
+		OwnerIDs:               l.ownerIDs,
+		Mode:                   mode,
+		ToolNames:              l.tools.List(),
+		SkillsSummary:          l.resolveSkillsSummary(skillFilter),
+		HasMemory:              l.hasMemory,
+		HasSpawn:               l.tools != nil && hasSpawn,
+		HasSkillSearch:         hasSkillSearch,
+		ContextFiles:           contextFiles,
+		ExtraPrompt:            extraSystemPrompt,
+		SandboxEnabled:         l.sandboxEnabled,
+		SandboxContainerDir:    l.sandboxContainerDir,
 		SandboxWorkspaceAccess: l.sandboxWorkspaceAccess,
 	})
 
@@ -117,16 +117,17 @@ func (l *Loop) buildMessages(ctx context.Context, history []providers.Message, s
 // resolveContextFiles merges base context files (from resolver, e.g. auto-generated
 // delegation targets) with per-user files. Per-user files override same-name base files,
 // but base-only files (like auto-injected delegation info) are preserved.
-func (l *Loop) resolveContextFiles(ctx context.Context, userID string) []bootstrap.ContextFile {
+func (l *Loop) resolveContextFiles(ctx context.Context, userID, userMessage string) []bootstrap.ContextFile {
+	base := l.contextFiles
 	if l.contextFileLoader == nil || userID == "" {
-		return l.contextFiles
+		return selectContextFilesForTurn(base, userMessage)
 	}
 	userFiles := l.contextFileLoader(ctx, l.agentUUID, userID, l.agentType)
 	if len(userFiles) == 0 {
-		return l.contextFiles
+		return selectContextFilesForTurn(base, userMessage)
 	}
 	if len(l.contextFiles) == 0 {
-		return userFiles
+		return selectContextFilesForTurn(userFiles, userMessage)
 	}
 
 	// Merge: start with per-user files, then append base-only files
@@ -141,7 +142,64 @@ func (l *Loop) resolveContextFiles(ctx context.Context, userID string) []bootstr
 			merged = append(merged, base)
 		}
 	}
-	return merged
+	return selectContextFilesForTurn(merged, userMessage)
+}
+
+const (
+	heavyContextCharsThreshold = 6000
+	maxContextCharsPerTurn     = 24000
+)
+
+// selectContextFilesForTurn lazily includes heavy context files only when the
+// current user turn likely needs long-term recall.
+func selectContextFilesForTurn(files []bootstrap.ContextFile, userMessage string) []bootstrap.ContextFile {
+	if len(files) == 0 {
+		return files
+	}
+
+	needsHeavy := needsHeavyContext(userMessage)
+	selected := make([]bootstrap.ContextFile, 0, len(files))
+	totalChars := 0
+
+	for _, f := range files {
+		p := strings.ToLower(strings.TrimSpace(f.Path))
+		contentLen := len(f.Content)
+		isCore := p == strings.ToLower(bootstrap.AgentsFile) ||
+			p == strings.ToLower(bootstrap.SoulFile) ||
+			p == strings.ToLower(bootstrap.UserFile) ||
+			p == strings.ToLower(bootstrap.IdentityFile) ||
+			p == strings.ToLower(bootstrap.BootstrapFile)
+		isHeavy := contentLen >= heavyContextCharsThreshold ||
+			p == "memory.md" ||
+			strings.HasPrefix(p, "memory/")
+
+		if isHeavy && !isCore && !needsHeavy {
+			continue
+		}
+		if !isCore && totalChars+contentLen > maxContextCharsPerTurn {
+			continue
+		}
+		selected = append(selected, f)
+		totalChars += contentLen
+	}
+
+	return selected
+}
+
+func needsHeavyContext(userMessage string) bool {
+	msg := strings.ToLower(strings.TrimSpace(userMessage))
+	if msg == "" {
+		return false
+	}
+	for _, kw := range []string{
+		"memory", "remember", "recall", "history", "context", "previous", "earlier", "yesterday",
+		"памят", "вспом", "напом", "истори", "контекст", "раньше", "вчера", "прошл",
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // Hybrid skill thresholds: when skill count and total token estimate are below
