@@ -71,6 +71,20 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 		agentLoop, err := agents.Get(agentID)
 		if err != nil {
 			slog.Warn("inbound: agent not found", "agent", agentID, "channel", msg.Channel)
+			// Ensure channel-side placeholder/typing cleanup even when routing fails
+			// before a run is scheduled (prevents stuck "Thinking..." in Telegram).
+			cleanupMeta := map[string]string{}
+			for _, k := range []string{"message_thread_id", "local_key", "placeholder_key", "group_id"} {
+				if v := msg.Metadata[k]; v != "" {
+					cleanupMeta[k] = v
+				}
+			}
+			msgBus.PublishOutbound(bus.OutboundMessage{
+				Channel:  msg.Channel,
+				ChatID:   msg.ChatID,
+				Content:  "",
+				Metadata: cleanupMeta,
+			})
 			return
 		}
 
@@ -345,6 +359,20 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			dedupeKey := fmt.Sprintf("%s|%s|%s|%s", msg.Channel, msg.SenderID, msg.ChatID, msgID)
 			if dedupe.IsDuplicate(dedupeKey) {
 				slog.Debug("dedup: skipping duplicate message", "key", dedupeKey)
+				// A duplicate webhook/update may still have emitted a placeholder on ingress.
+				// Publish empty outbound to clear stale placeholders/typing indicators.
+				cleanupMeta := map[string]string{}
+				for _, k := range []string{"message_thread_id", "local_key", "placeholder_key", "group_id"} {
+					if v := msg.Metadata[k]; v != "" {
+						cleanupMeta[k] = v
+					}
+				}
+				msgBus.PublishOutbound(bus.OutboundMessage{
+					Channel:  msg.Channel,
+					ChatID:   msg.ChatID,
+					Content:  "",
+					Metadata: cleanupMeta,
+				})
 				continue
 			}
 		}
