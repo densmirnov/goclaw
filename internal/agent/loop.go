@@ -703,7 +703,13 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 		if err != nil {
 			l.emitLLMSpan(ctx, llmSpanStart, iteration, messages, nil, err)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(llmCtx.Err(), context.DeadlineExceeded) {
-				return nil, fmt.Errorf("LLM call timed out (iteration %d, timeout %s)", iteration, defaultLLMCallTimeout)
+				slog.Warn("llm call timeout",
+					"agent", l.id,
+					"iteration", iteration,
+					"timeout", defaultLLMCallTimeout,
+				)
+				finalContent = "I hit a provider timeout while processing your request. Please try again."
+				break
 			}
 			return nil, fmt.Errorf("LLM call failed (iteration %d): %w", iteration, err)
 		}
