@@ -285,7 +285,30 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 		// Handle result asynchronously to not block the flush callback.
 		go func(channel, chatID, session, rID string, meta map[string]string, cancel context.CancelFunc) {
 			defer cancel()
-			outcome := <-outCh
+			var outcome scheduler.RunOutcome
+			select {
+			case outcome = <-outCh:
+			case <-runCtx.Done():
+				// Hard guard: if scheduler/provider never returns an outcome,
+				// ensure channel-side placeholders/typing are cleaned up.
+				slog.Error("inbound: run timed out without scheduler outcome",
+					"channel", channel,
+					"chat_id", chatID,
+					"session", session,
+					"run_id", rID,
+					"error", runCtx.Err(),
+				)
+				if channelMgr != nil {
+					channelMgr.UnregisterRun(rID)
+				}
+				msgBus.PublishOutbound(bus.OutboundMessage{
+					Channel:  channel,
+					ChatID:   chatID,
+					Content:  "The request timed out. Please try again.",
+					Metadata: meta,
+				})
+				return
+			}
 
 			// Clean up run tracking (in case HandleAgentEvent didn't fire for terminal events)
 			if channelMgr != nil {
