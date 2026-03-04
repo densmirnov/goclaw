@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -30,6 +31,7 @@ import (
 // BOOTSTRAP.md is auto-removed if the LLM hasn't cleared it.
 // Bootstrap typically completes in 2-3 conversation turns.
 const bootstrapAutoCleanupTurns = 3
+const defaultLLMCallTimeout = 45 * time.Second
 
 // EnsureUserFilesFunc seeds per-user context files on first chat (managed mode).
 // Returns the effective workspace path (from user_agent_profiles) for caching.
@@ -55,12 +57,12 @@ type Loop struct {
 	maxToolCalls  int
 	workspace     string
 
-	eventPub   bus.EventPublisher // currently unused by Loop; kept for future use
-	sessions   store.SessionStore
+	eventPub        bus.EventPublisher // currently unused by Loop; kept for future use
+	sessions        store.SessionStore
 	tools           *tools.Registry
 	toolPolicy      *tools.PolicyEngine    // optional: filters tools sent to LLM
 	agentToolPolicy *config.ToolPolicySpec // per-agent tool policy from DB (nil = no restrictions)
-	activeRuns atomic.Int32 // number of currently executing runs
+	activeRuns      atomic.Int32           // number of currently executing runs
 
 	// Per-session summarization lock: prevents concurrent summarize goroutines for the same session.
 	summarizeMu sync.Map // sessionKey → *sync.Mutex
@@ -73,10 +75,10 @@ type Loop struct {
 	contextFiles   []bootstrap.ContextFile
 
 	// Per-user file seeding + dynamic context loading (managed mode)
-	ensureUserFiles    EnsureUserFilesFunc
-	contextFileLoader  ContextFileLoaderFunc
-	bootstrapCleanup   BootstrapCleanupFunc
-	userWorkspaces     sync.Map // userID → string (expanded workspace path from user_agent_profiles)
+	ensureUserFiles   EnsureUserFilesFunc
+	contextFileLoader ContextFileLoaderFunc
+	bootstrapCleanup  BootstrapCleanupFunc
+	userWorkspaces    sync.Map // userID → string (expanded workspace path from user_agent_profiles)
 
 	// Compaction config (memory flush settings)
 	compactionCfg *config.CompactionConfig
@@ -85,8 +87,8 @@ type Loop struct {
 	contextPruningCfg *config.ContextPruningConfig
 
 	// Sandbox info
-	sandboxEnabled        bool
-	sandboxContainerDir   string
+	sandboxEnabled         bool
+	sandboxContainerDir    string
 	sandboxWorkspaceAccess string
 
 	// Event callback for broadcasting agent events (run.started, chunk, tool.call, etc.)
@@ -115,7 +117,7 @@ type Loop struct {
 
 // AgentEvent is emitted during agent execution for WS broadcasting.
 type AgentEvent struct {
-	Type    string      `json:"type"`    // "run.started", "run.completed", "run.failed", "chunk", "tool.call", "tool.result"
+	Type    string      `json:"type"` // "run.started", "run.completed", "run.failed", "chunk", "tool.call", "tool.result"
 	AgentID string      `json:"agentId"`
 	RunID   string      `json:"runId"`
 	Payload interface{} `json:"payload,omitempty"`
@@ -123,15 +125,15 @@ type AgentEvent struct {
 
 // LoopConfig configures a new Loop.
 type LoopConfig struct {
-	ID            string
-	Provider      providers.Provider
-	Model         string
-	ContextWindow int
-	MaxIterations int
-	MaxToolCalls  int
-	Workspace     string
-	Bus           bus.EventPublisher
-	Sessions      store.SessionStore
+	ID              string
+	Provider        providers.Provider
+	Model           string
+	ContextWindow   int
+	MaxIterations   int
+	MaxToolCalls    int
+	Workspace       string
+	Bus             bus.EventPublisher
+	Sessions        store.SessionStore
 	Tools           *tools.Registry
 	ToolPolicy      *tools.PolicyEngine    // optional: filters tools sent to LLM
 	AgentToolPolicy *config.ToolPolicySpec // per-agent tool policy from DB (nil = no restrictions)
@@ -151,8 +153,8 @@ type LoopConfig struct {
 	ContextPruningCfg *config.ContextPruningConfig
 
 	// Sandbox info (injected into system prompt)
-	SandboxEnabled        bool
-	SandboxContainerDir   string // e.g. "/workspace"
+	SandboxEnabled         bool
+	SandboxContainerDir    string // e.g. "/workspace"
 	SandboxWorkspaceAccess string // "none", "ro", "rw"
 
 	// Managed mode: agent UUID for context propagation to tools
@@ -168,9 +170,9 @@ type LoopConfig struct {
 	TraceCollector *tracing.Collector
 
 	// Security: input guard for injection detection, max message size
-	InputGuard      *InputGuard    // nil = auto-create when InjectionAction != "off"
-	InjectionAction string         // "log", "warn" (default), "block", "off"
-	MaxMessageChars int            // 0 = use default (32000)
+	InputGuard      *InputGuard // nil = auto-create when InjectionAction != "off"
+	InjectionAction string      // "log", "warn" (default), "block", "off"
+	MaxMessageChars int         // 0 = use default (32000)
 
 	// Global builtin tool settings (from builtin_tools table, managed mode)
 	BuiltinToolSettings tools.BuiltinToolSettings
@@ -209,68 +211,68 @@ func NewLoop(cfg LoopConfig) *Loop {
 	}
 
 	return &Loop{
-		id:            cfg.ID,
-		agentUUID:     cfg.AgentUUID,
-		agentType:     cfg.AgentType,
-		provider:      cfg.Provider,
-		model:         cfg.Model,
-		contextWindow: cfg.ContextWindow,
-		maxIterations: cfg.MaxIterations,
-		maxToolCalls:  cfg.MaxToolCalls,
-		workspace:     cfg.Workspace,
-		eventPub:      cfg.Bus,
-		sessions:      cfg.Sessions,
-		tools:           cfg.Tools,
-		toolPolicy:      cfg.ToolPolicy,
-		agentToolPolicy: cfg.AgentToolPolicy,
-		onEvent:         cfg.OnEvent,
-		ownerIDs:      cfg.OwnerIDs,
-		skillsLoader:   cfg.SkillsLoader,
-		skillAllowList: cfg.SkillAllowList,
-		hasMemory:     cfg.HasMemory,
-		contextFiles:  cfg.ContextFiles,
-		ensureUserFiles:    cfg.EnsureUserFiles,
-		contextFileLoader:  cfg.ContextFileLoader,
-		bootstrapCleanup:   cfg.BootstrapCleanup,
-		compactionCfg:     cfg.CompactionCfg,
-		contextPruningCfg: cfg.ContextPruningCfg,
-		sandboxEnabled:        cfg.SandboxEnabled,
-		sandboxContainerDir:   cfg.SandboxContainerDir,
+		id:                     cfg.ID,
+		agentUUID:              cfg.AgentUUID,
+		agentType:              cfg.AgentType,
+		provider:               cfg.Provider,
+		model:                  cfg.Model,
+		contextWindow:          cfg.ContextWindow,
+		maxIterations:          cfg.MaxIterations,
+		maxToolCalls:           cfg.MaxToolCalls,
+		workspace:              cfg.Workspace,
+		eventPub:               cfg.Bus,
+		sessions:               cfg.Sessions,
+		tools:                  cfg.Tools,
+		toolPolicy:             cfg.ToolPolicy,
+		agentToolPolicy:        cfg.AgentToolPolicy,
+		onEvent:                cfg.OnEvent,
+		ownerIDs:               cfg.OwnerIDs,
+		skillsLoader:           cfg.SkillsLoader,
+		skillAllowList:         cfg.SkillAllowList,
+		hasMemory:              cfg.HasMemory,
+		contextFiles:           cfg.ContextFiles,
+		ensureUserFiles:        cfg.EnsureUserFiles,
+		contextFileLoader:      cfg.ContextFileLoader,
+		bootstrapCleanup:       cfg.BootstrapCleanup,
+		compactionCfg:          cfg.CompactionCfg,
+		contextPruningCfg:      cfg.ContextPruningCfg,
+		sandboxEnabled:         cfg.SandboxEnabled,
+		sandboxContainerDir:    cfg.SandboxContainerDir,
 		sandboxWorkspaceAccess: cfg.SandboxWorkspaceAccess,
-		traceCollector:        cfg.TraceCollector,
-		inputGuard:            guard,
-		injectionAction:       action,
-		maxMessageChars:       cfg.MaxMessageChars,
-		builtinToolSettings:   cfg.BuiltinToolSettings,
-		thinkingLevel:         cfg.ThinkingLevel,
-		groupWriterCache:      cfg.GroupWriterCache,
-		teamStore:             cfg.TeamStore,
+		traceCollector:         cfg.TraceCollector,
+		inputGuard:             guard,
+		injectionAction:        action,
+		maxMessageChars:        cfg.MaxMessageChars,
+		builtinToolSettings:    cfg.BuiltinToolSettings,
+		thinkingLevel:          cfg.ThinkingLevel,
+		groupWriterCache:       cfg.GroupWriterCache,
+		teamStore:              cfg.TeamStore,
 	}
 }
 
 // RunRequest is the input for processing a message through the agent.
 type RunRequest struct {
-	SessionKey       string // composite key: agent:{agentId}:{channel}:{peerKind}:{chatId}
-	Message          string // user message
-	Media            []string // local file paths to images (already sanitized)
-	ForwardMedia     []string // media paths to forward to output (not deleted, from delegation results)
-	Channel          string // source channel
-	ChatID           string // source chat ID
-	PeerKind         string // "direct" or "group" (for session key building and tool context)
-	RunID            string // unique run identifier
-	UserID           string // external user ID (TEXT, free-form) for multi-tenant scoping
-	SenderID         string // original individual sender ID (preserved in group chats for permission checks)
-	Stream           bool   // whether to stream response chunks
-	ExtraSystemPrompt string   // optional: injected into system prompt (skills, subagent context, etc.)
-	SkillFilter       []string // per-request skill override: nil=use agent default, []=no skills, ["x","y"]=whitelist
-	HistoryLimit      int      // max user turns to keep in context (0=unlimited, from channel config)
-	ToolAllow         []string // per-group tool allow list (nil = no restriction, supports "group:xxx")
-	LocalKey         string    // composite key with topic/thread suffix for routing (e.g. "-100123:topic:42")
-	ParentTraceID    uuid.UUID // if set, reuse parent trace instead of creating new (announce runs)
-	ParentRootSpanID uuid.UUID // if set, nest announce agent span under this parent span
-	TraceName        string    // override trace name (default: "chat <agentID>")
-	TraceTags        []string  // additional tags for the trace (e.g. "cron")
-	MaxIterations    int       // per-request override (0 = use agent default, must be lower)
+	SessionKey        string    // composite key: agent:{agentId}:{channel}:{peerKind}:{chatId}
+	Message           string    // user message
+	Media             []string  // local file paths to images (already sanitized)
+	ForwardMedia      []string  // media paths to forward to output (not deleted, from delegation results)
+	Channel           string    // source channel
+	ChatID            string    // source chat ID
+	PeerKind          string    // "direct" or "group" (for session key building and tool context)
+	RunID             string    // unique run identifier
+	UserID            string    // external user ID (TEXT, free-form) for multi-tenant scoping
+	SenderID          string    // original individual sender ID (preserved in group chats for permission checks)
+	Stream            bool      // whether to stream response chunks
+	ExtraSystemPrompt string    // optional: injected into system prompt (skills, subagent context, etc.)
+	SkillFilter       []string  // per-request skill override: nil=use agent default, []=no skills, ["x","y"]=whitelist
+	HistoryLimit      int       // max user turns to keep in context (0=unlimited, from channel config)
+	ToolAllow         []string  // per-group tool allow list (nil = no restriction, supports "group:xxx")
+	LocalKey          string    // composite key with topic/thread suffix for routing (e.g. "-100123:topic:42")
+	ParentTraceID     uuid.UUID // if set, reuse parent trace instead of creating new (announce runs)
+	ParentRootSpanID  uuid.UUID // if set, nest announce agent span under this parent span
+	TraceName         string    // override trace name (default: "chat <agentID>")
+	TraceTags         []string  // additional tags for the trace (e.g. "cron")
+	MaxIterations     int       // per-request override (0 = use agent default, must be lower)
 }
 
 // RunResult is the output of a completed agent run.
@@ -279,13 +281,13 @@ type RunResult struct {
 	RunID        string           `json:"runId"`
 	Iterations   int              `json:"iterations"`
 	Usage        *providers.Usage `json:"usage,omitempty"`
-	Media        []MediaResult    `json:"media,omitempty"`         // media files from tool results (MEDIA: prefix)
-	Deliverables []string         `json:"deliverables,omitempty"`  // actual content from tool outputs (for team task results)
+	Media        []MediaResult    `json:"media,omitempty"`        // media files from tool results (MEDIA: prefix)
+	Deliverables []string         `json:"deliverables,omitempty"` // actual content from tool outputs (for team task results)
 }
 
 // MediaResult represents a media file produced by a tool during the agent run.
 type MediaResult struct {
-	Path        string `json:"path"`                  // local file path
+	Path        string `json:"path"`                   // local file path
 	ContentType string `json:"content_type,omitempty"` // MIME type
 	AsVoice     bool   `json:"as_voice,omitempty"`     // send as voice message (Telegram OGG)
 }
@@ -598,7 +600,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	iteration := 0
 	totalToolCalls := 0
 	var finalContent string
-	var asyncToolCalls []string   // track async spawn tool names for fallback
+	var asyncToolCalls []string    // track async spawn tool names for fallback
 	var mediaResults []MediaResult // media files from tool MEDIA: results
 	var deliverables []string      // actual content from tool outputs (for team task results)
 
@@ -609,7 +611,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	// Team task orphan detection: track team_tasks create vs spawn calls.
 	// If the LLM creates tasks but forgets to spawn, inject a reminder.
 	var teamTaskCreates int  // count of team_tasks action=create calls
-	var teamTaskSpawns  int  // count of spawn calls with team_task_id
+	var teamTaskSpawns int   // count of spawn calls with team_task_id
 	var teamTaskRetried bool // only retry once to prevent infinite loops
 
 	// Inject retry hook so channels can update placeholder on LLM retries.
@@ -673,8 +675,9 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 
 		llmSpanStart := time.Now().UTC()
 
+		llmCtx, llmCancel := context.WithTimeout(ctx, defaultLLMCallTimeout)
 		if req.Stream {
-			resp, err = l.provider.ChatStream(ctx, chatReq, func(chunk providers.StreamChunk) {
+			resp, err = l.provider.ChatStream(llmCtx, chatReq, func(chunk providers.StreamChunk) {
 				if chunk.Thinking != "" {
 					l.emit(AgentEvent{
 						Type:    protocol.ChatEventThinking,
@@ -693,11 +696,15 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 				}
 			})
 		} else {
-			resp, err = l.provider.Chat(ctx, chatReq)
+			resp, err = l.provider.Chat(llmCtx, chatReq)
 		}
+		llmCancel()
 
 		if err != nil {
 			l.emitLLMSpan(ctx, llmSpanStart, iteration, messages, nil, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(llmCtx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf("LLM call timed out (iteration %d, timeout %s)", iteration, defaultLLMCallTimeout)
+			}
 			return nil, fmt.Errorf("LLM call failed (iteration %d): %w", iteration, err)
 		}
 
