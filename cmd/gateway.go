@@ -353,6 +353,23 @@ func runGateway() {
 			traceCollector.Start()
 			slog.Info("LLM tracing enabled")
 		}
+
+		// Managed mode bootstrap safety:
+		// If DB is reachable but effectively empty (no providers/default agent/channel instances),
+		// run non-interactive onboard seeding from env to keep Dokploy deployments operational
+		// after volume resets or fresh DB provisioning.
+		if canAutoOnboard() && managedNeedsBootstrap(pgStores) {
+			slog.Info("managed mode: empty bootstrap data detected, running auto-onboard seeding")
+			if runAutoOnboard(cfgPath) {
+				if reloaded, loadErr := config.Load(cfgPath); loadErr == nil {
+					cfg = reloaded
+				} else {
+					slog.Warn("managed mode: failed to reload config after auto-onboard", "error", loadErr)
+				}
+			} else {
+				slog.Warn("managed mode: auto-onboard bootstrap seeding failed; continuing startup")
+			}
+		}
 	} else {
 		// Standalone mode: file-based stores
 		sessStore = file.NewFileSessionStore(sessions.NewManager(config.ExpandHome(cfg.Sessions.Storage)))
