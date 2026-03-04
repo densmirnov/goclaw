@@ -434,7 +434,7 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		}
 	}
 
-	c.Bus().PublishInbound(bus.InboundMessage{
+	inboundMsg := bus.InboundMessage{
 		Channel:      c.Name(),
 		SenderID:     senderID,
 		ChatID:       chatIDStr,
@@ -446,7 +446,28 @@ func (c *Channel) handleMessage(ctx context.Context, update telego.Update) {
 		HistoryLimit: c.historyLimit,
 		ToolAllow:    topicCfg.tools,
 		Metadata:     metadata,
-	})
+	}
+	if !c.Bus().TryPublishInbound(inboundMsg) {
+		slog.Error("telegram: inbound queue full, dropping message",
+			"chat_id", chatIDStr, "local_key", localKey, "message_id", message.MessageID)
+
+		// Stop typing/thinking indicators to avoid stale "Thinking..." state.
+		if stop, ok := c.stopThinking.Load(localKey); ok {
+			if cf, ok := stop.(*thinkingCancel); ok {
+				cf.Cancel()
+			}
+			c.stopThinking.Delete(localKey)
+		}
+		if ctrl, ok := c.typingCtrls.LoadAndDelete(localKey); ok {
+			ctrl.(*typing.Controller).Stop()
+		}
+		if pID, ok := c.placeholders.Load(localKey); ok {
+			c.placeholders.Delete(localKey)
+			_ = c.deleteMessage(ctx, chatID, pID.(int))
+		}
+		_ = c.sendHTML(ctx, chatID, "System is busy right now. Please try again in a few seconds.", 0, dmThreadID)
+		return
+	}
 
 	// Clear pending history after sending to agent.
 	if isGroup {

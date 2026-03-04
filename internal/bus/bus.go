@@ -12,7 +12,7 @@ type MessageBus struct {
 	outbound chan OutboundMessage
 
 	// Channel message handlers (channel name → handler)
-	handlers map[string]MessageHandler
+	handlers  map[string]MessageHandler
 	handlerMu sync.RWMutex
 
 	// Event subscribers (subscriber ID → handler)
@@ -32,6 +32,17 @@ func New() *MessageBus {
 // PublishInbound queues an inbound message from a channel.
 func (mb *MessageBus) PublishInbound(msg InboundMessage) {
 	mb.inbound <- msg
+}
+
+// TryPublishInbound attempts to queue an inbound message without blocking.
+// Returns false when the inbound queue is full.
+func (mb *MessageBus) TryPublishInbound(msg InboundMessage) bool {
+	select {
+	case mb.inbound <- msg:
+		return true
+	default:
+		return false
+	}
 }
 
 // ConsumeInbound blocks until an inbound message is available or ctx is cancelled.
