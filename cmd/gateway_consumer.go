@@ -19,6 +19,8 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
+const inboundRunTimeout = 90 * time.Second
+
 // makeSchedulerRunFunc creates the RunFunc for the scheduler.
 // It extracts the agentID from the session key and routes to the correct agent loop.
 func makeSchedulerRunFunc(agents *agent.Router, cfg *config.Config) scheduler.RunFunc {
@@ -202,8 +204,10 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			reqMedia = msg.Media
 		}
 
-		// Schedule through main lane (per-session concurrency controlled by maxConcurrent)
-		outCh := sched.ScheduleWithOpts(ctx, "main", agent.RunRequest{
+		// Schedule through main lane (per-session concurrency controlled by maxConcurrent).
+		// Timeout guard prevents stuck Telegram "Thinking..." when an LLM/tool loop hangs.
+		runCtx, runCancel := context.WithTimeout(ctx, inboundRunTimeout)
+		outCh := sched.ScheduleWithOpts(runCtx, "main", agent.RunRequest{
 			SessionKey:        sessionKey,
 			Message:           msg.Content,
 			Media:             reqMedia,
@@ -240,7 +244,8 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 		}
 
 		// Handle result asynchronously to not block the flush callback.
-		go func(channel, chatID, session, rID string, meta map[string]string) {
+		go func(channel, chatID, session, rID string, meta map[string]string, cancel context.CancelFunc) {
+			defer cancel()
 			outcome := <-outCh
 
 			// Clean up run tracking (in case HandleAgentEvent didn't fire for terminal events)
@@ -311,7 +316,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			}
 
 			msgBus.PublishOutbound(outMsg)
-		}(msg.Channel, msg.ChatID, sessionKey, runID, outMeta)
+		}(msg.Channel, msg.ChatID, sessionKey, runID, outMeta, runCancel)
 	}
 
 	// Inbound debounce: merge rapid messages from the same sender before processing.
