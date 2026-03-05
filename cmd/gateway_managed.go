@@ -496,7 +496,7 @@ func ensureControlCenterSchema(db *sql.DB) {
 			name VARCHAR(100) PRIMARY KEY,
 			last_refresh_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE MATERIALIZED VIEW IF NOT EXISTS cc_agent_trace_rollup AS
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS public.cc_agent_trace_rollup AS
 		 SELECT
 			COALESCE(agent_id::text, 'unassigned') AS agent_id,
 			COUNT(*) AS run_count,
@@ -506,8 +506,8 @@ func ensureControlCenterSchema(db *sql.DB) {
 			MAX(created_at) AS last_run_at
 		 FROM traces
 		 GROUP BY COALESCE(agent_id::text, 'unassigned')`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_agent_trace_rollup_agent ON cc_agent_trace_rollup(agent_id)`,
-		`CREATE MATERIALIZED VIEW IF NOT EXISTS cc_team_task_rollup AS
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_agent_trace_rollup_agent ON public.cc_agent_trace_rollup(agent_id)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS public.cc_team_task_rollup AS
 		 SELECT
 			team_id,
 			status,
@@ -516,7 +516,7 @@ func ensureControlCenterSchema(db *sql.DB) {
 			MAX(updated_at) AS last_task_update_at
 		 FROM team_tasks
 		 GROUP BY team_id, status`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_team_task_rollup_key ON cc_team_task_rollup(team_id, status)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_team_task_rollup_key ON public.cc_team_task_rollup(team_id, status)`,
 		`INSERT INTO control_center_rollup_state (name, last_refresh_at)
 		 VALUES ('cc_agent_trace_rollup', NOW()), ('cc_team_task_rollup', NOW())
 		 ON CONFLICT (name) DO UPDATE SET last_refresh_at = EXCLUDED.last_refresh_at`,
@@ -553,10 +553,10 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
 
-		viewExists := func(ctx context.Context, name string) bool {
+		viewExists := func(ctx context.Context, qualifiedName string) bool {
 			var reg sql.NullString
-			if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)", name).Scan(&reg); err != nil {
-				slog.Debug("rollup.exists.check_failed", "view", name, "error", err)
+			if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)", qualifiedName).Scan(&reg); err != nil {
+				slog.Debug("rollup.exists.check_failed", "view", qualifiedName, "error", err)
 				return false
 			}
 			return reg.Valid && reg.String != ""
@@ -567,8 +567,8 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 			defer cancel()
 			var failures int
 			var refreshed int
-			if viewExists(ctx, "cc_agent_trace_rollup") {
-				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_agent_trace_rollup"); err != nil {
+			if viewExists(ctx, "public.cc_agent_trace_rollup") {
+				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY public.cc_agent_trace_rollup"); err != nil {
 					slog.Debug("rollup.refresh.failed", "view", "cc_agent_trace_rollup", "error", err)
 					failures++
 				} else {
@@ -576,8 +576,8 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 					refreshed++
 				}
 			}
-			if viewExists(ctx, "cc_team_task_rollup") {
-				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_team_task_rollup"); err != nil {
+			if viewExists(ctx, "public.cc_team_task_rollup") {
+				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY public.cc_team_task_rollup"); err != nil {
 					slog.Debug("rollup.refresh.failed", "view", "cc_team_task_rollup", "error", err)
 					failures++
 				} else {

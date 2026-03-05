@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,6 +42,19 @@ func (s *PGTeamStore) CreateTask(ctx context.Context, task *store.TeamTaskData) 
 			sql.NullString{String: task.EscalationReason, Valid: task.EscalationReason != ""},
 			now, now,
 		)
+		if isUndefinedColumnErr(err) {
+			s.disableTaskSLA()
+			_, err = s.db.ExecContext(ctx,
+				`INSERT INTO team_tasks (id, team_id, subject, description, status, owner_agent_id, blocked_by, priority, result, user_id, channel, created_at, updated_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+				task.ID, task.TeamID, task.Subject, task.Description,
+				task.Status, task.OwnerAgentID, pq.Array(task.BlockedBy),
+				task.Priority, task.Result,
+				sql.NullString{String: task.UserID, Valid: task.UserID != ""},
+				sql.NullString{String: task.Channel, Valid: task.Channel != ""},
+				now, now,
+			)
+		}
 	} else {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO team_tasks (id, team_id, subject, description, status, owner_agent_id, blocked_by, priority, result, user_id, channel, created_at, updated_at)
@@ -98,15 +112,19 @@ func (s *PGTeamStore) ListTasks(ctx context.Context, teamID uuid.UUID, orderBy s
 		 WHERE t.team_id = $1 AND ($2 = '' OR t.user_id = $2) ` + statusWhere + `
 		 ORDER BY ` + orderClause
 	}
-	rows, err := s.db.QueryContext(ctx, query, teamID, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	if s.hasTaskSLA(ctx) {
+		rows, err := s.db.QueryContext(ctx, query, teamID, userID)
+		if err != nil {
+			if isUndefinedColumnErr(err) {
+				s.disableTaskSLA()
+				return s.listTasksLegacy(ctx, teamID, orderClause, statusWhere, userID)
+			}
+			return nil, err
+		}
+		defer rows.Close()
 		return scanTaskRowsJoined(rows)
 	}
-	return scanTaskRowsJoinedLegacy(rows)
+	return s.listTasksLegacy(ctx, teamID, orderClause, statusWhere, userID)
 }
 
 func (s *PGTeamStore) GetTask(ctx context.Context, taskID uuid.UUID) (*store.TeamTaskData, error) {
@@ -123,6 +141,17 @@ func (s *PGTeamStore) GetTask(ctx context.Context, taskID uuid.UUID) (*store.Tea
 		 WHERE t.id = $1`
 	}
 	rows, err := s.db.QueryContext(ctx, query, taskID)
+	if err != nil {
+		if s.hasTaskSLA(ctx) && isUndefinedColumnErr(err) {
+			s.disableTaskSLA()
+			query = `SELECT t.id, t.team_id, t.subject, t.description, t.status, t.owner_agent_id, t.blocked_by, t.priority, t.result, t.user_id, t.channel, t.created_at, t.updated_at,
+		 COALESCE(a.agent_key, '') AS owner_agent_key
+		 FROM team_tasks t
+		 LEFT JOIN agents a ON a.id = t.owner_agent_id
+		 WHERE t.id = $1`
+			rows, err = s.db.QueryContext(ctx, query, taskID)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +192,19 @@ func (s *PGTeamStore) SearchTasks(ctx context.Context, teamID uuid.UUID, query s
 		 LIMIT $3`
 	}
 	rows, err := s.db.QueryContext(ctx, sqlQuery, teamID, query, limit, userID)
+	if err != nil {
+		if s.hasTaskSLA(ctx) && isUndefinedColumnErr(err) {
+			s.disableTaskSLA()
+			sqlQuery = `SELECT t.id, t.team_id, t.subject, t.description, t.status, t.owner_agent_id, t.blocked_by, t.priority, t.result, t.user_id, t.channel, t.created_at, t.updated_at,
+		 COALESCE(a.agent_key, '') AS owner_agent_key
+		 FROM team_tasks t
+		 LEFT JOIN agents a ON a.id = t.owner_agent_id
+		 WHERE t.team_id = $1 AND t.tsv @@ plainto_tsquery('simple', $2) AND ($4 = '' OR t.user_id = $4)
+		 ORDER BY ts_rank(t.tsv, plainto_tsquery('simple', $2)) DESC
+		 LIMIT $3`
+			rows, err = s.db.QueryContext(ctx, sqlQuery, teamID, query, limit, userID)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -425,18 +467,49 @@ func (s *PGTeamStore) hasTaskOperatorActions(ctx context.Context) bool {
 
 func (s *PGTeamStore) initTaskSchemaFlags(ctx context.Context) {
 	s.schemaOnce.Do(func() {
+		probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		var n int
-		err := s.db.QueryRowContext(ctx,
+		err := s.db.QueryRowContext(probeCtx,
 			`SELECT count(*) FROM information_schema.columns
-			 WHERE table_name='team_tasks' AND column_name IN ('sla_due_at','blocked_at','escalated_at','escalation_reason')`,
+			 WHERE table_schema='public' AND table_name='team_tasks'
+			   AND column_name IN ('sla_due_at','blocked_at','escalated_at','escalation_reason')`,
 		).Scan(&n)
 		s.hasTaskSLAColumns = err == nil && n == 4
 
 		var t int
-		err = s.db.QueryRowContext(ctx,
+		err = s.db.QueryRowContext(probeCtx,
 			`SELECT count(*) FROM information_schema.tables
-			 WHERE table_name='team_task_operator_actions'`,
+			 WHERE table_schema='public' AND table_name='team_task_operator_actions'`,
 		).Scan(&t)
 		s.hasTaskOperatorActionsTable = err == nil && t == 1
 	})
+}
+
+func (s *PGTeamStore) disableTaskSLA() {
+	s.hasTaskSLAColumns = false
+}
+
+func isUndefinedColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "42703"
+}
+
+func (s *PGTeamStore) listTasksLegacy(ctx context.Context, teamID uuid.UUID, orderClause, statusWhere, userID string) ([]store.TeamTaskData, error) {
+	query := `SELECT t.id, t.team_id, t.subject, t.description, t.status, t.owner_agent_id, t.blocked_by, t.priority, t.result, t.user_id, t.channel, t.created_at, t.updated_at,
+		 COALESCE(a.agent_key, '') AS owner_agent_key
+		 FROM team_tasks t
+		 LEFT JOIN agents a ON a.id = t.owner_agent_id
+		 WHERE t.team_id = $1 AND ($2 = '' OR t.user_id = $2) ` + statusWhere + `
+		 ORDER BY ` + orderClause
+	rows, err := s.db.QueryContext(ctx, query, teamID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTaskRowsJoinedLegacy(rows)
 }
