@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -5,6 +6,7 @@ import { useHttp } from "@/hooks/use-ws";
 
 export function SwarmHealthPage() {
   const http = useHttp();
+  const [p95SortDir, setP95SortDir] = useState<"desc" | "asc">("desc");
   const { data } = useQuery({
     queryKey: ["control-center-health"],
     queryFn: async () =>
@@ -64,6 +66,26 @@ export function SwarmHealthPage() {
   const toolAlerts = (slo?.alerts ?? []).filter(
     (a) => a.type === "tool_p95_latency",
   );
+  const toolP95Threshold = useMemo(() => {
+    const threshold = toolAlerts.find(
+      (a) => typeof a.threshold === "number" && a.threshold > 0,
+    )?.threshold;
+    return threshold ?? 3000;
+  }, [toolAlerts]);
+  const rawRows = toolLatency?.rows ?? data?.tool_latency_top ?? [];
+  const sortedRows = useMemo(() => {
+    const out = [...rawRows];
+    out.sort((a, b) =>
+      p95SortDir === "desc" ? b.p95_ms - a.p95_ms : a.p95_ms - b.p95_ms,
+    );
+    return out;
+  }, [rawRows, p95SortDir]);
+
+  function p95ColorClass(value: number, threshold: number): string {
+    if (value > threshold) return "text-red-600 dark:text-red-400";
+    if (value > threshold * 0.7) return "text-amber-600 dark:text-amber-400";
+    return "text-emerald-600 dark:text-emerald-400";
+  }
 
   return (
     <div className="space-y-6 p-6">
@@ -136,7 +158,17 @@ export function SwarmHealthPage() {
                   <th className="py-2 pr-4 font-medium">Tool</th>
                   <th className="py-2 pr-4 font-medium">Count</th>
                   <th className="py-2 pr-4 font-medium">p50</th>
-                  <th className="py-2 pr-4 font-medium">p95</th>
+                  <th className="py-2 pr-4 font-medium">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 hover:text-foreground"
+                      onClick={() =>
+                        setP95SortDir((v) => (v === "desc" ? "asc" : "desc"))
+                      }
+                    >
+                      p95 {p95SortDir === "desc" ? "↓" : "↑"}
+                    </button>
+                  </th>
                   <th className="py-2 pr-4 font-medium">Avg</th>
                   <th className="py-2 pr-4 font-medium">Max</th>
                   <th className="py-2 pr-4 font-medium">Errors</th>
@@ -144,28 +176,27 @@ export function SwarmHealthPage() {
                 </tr>
               </thead>
               <tbody>
-                {(toolLatency?.rows ?? data?.tool_latency_top ?? []).map(
-                  (row) => (
-                    <tr key={row.tool} className="border-b">
-                      <td className="py-2 pr-4 font-medium">{row.tool}</td>
-                      <td className="py-2 pr-4 tabular-nums">{row.count}</td>
-                      <td className="py-2 pr-4 tabular-nums">{row.p50_ms}ms</td>
-                      <td className="py-2 pr-4 tabular-nums">{row.p95_ms}ms</td>
-                      <td className="py-2 pr-4 tabular-nums">
-                        {Math.round(row.avg_ms)}ms
-                      </td>
-                      <td className="py-2 pr-4 tabular-nums">{row.max_ms}ms</td>
-                      <td className="py-2 pr-4 tabular-nums">
-                        {row.error_count} ({(row.error_rate * 100).toFixed(1)}%)
-                      </td>
-                      <td className="py-2 tabular-nums">
-                        {row.in_flight ?? 0}
-                      </td>
-                    </tr>
-                  ),
-                )}
-                {(toolLatency?.rows ?? data?.tool_latency_top ?? []).length ===
-                  0 && (
+                {sortedRows.map((row) => (
+                  <tr key={row.tool} className="border-b">
+                    <td className="py-2 pr-4 font-medium">{row.tool}</td>
+                    <td className="py-2 pr-4 tabular-nums">{row.count}</td>
+                    <td className="py-2 pr-4 tabular-nums">{row.p50_ms}ms</td>
+                    <td
+                      className={`py-2 pr-4 tabular-nums font-medium ${p95ColorClass(row.p95_ms, toolP95Threshold)}`}
+                    >
+                      {row.p95_ms}ms
+                    </td>
+                    <td className="py-2 pr-4 tabular-nums">
+                      {Math.round(row.avg_ms)}ms
+                    </td>
+                    <td className="py-2 pr-4 tabular-nums">{row.max_ms}ms</td>
+                    <td className="py-2 pr-4 tabular-nums">
+                      {row.error_count} ({(row.error_rate * 100).toFixed(1)}%)
+                    </td>
+                    <td className="py-2 tabular-nums">{row.in_flight ?? 0}</td>
+                  </tr>
+                ))}
+                {sortedRows.length === 0 && (
                   <tr>
                     <td className="py-3 text-muted-foreground" colSpan={8}>
                       No tool latency data yet
