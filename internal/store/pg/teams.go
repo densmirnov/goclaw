@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,10 @@ import (
 // PGTeamStore implements store.TeamStore backed by Postgres.
 type PGTeamStore struct {
 	db *sql.DB
+
+	schemaOnce                  sync.Once
+	hasTaskSLAColumns           bool
+	hasTaskOperatorActionsTable bool
 }
 
 func NewPGTeamStore(db *sql.DB) *PGTeamStore {
