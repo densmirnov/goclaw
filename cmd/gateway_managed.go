@@ -414,6 +414,7 @@ func wireManagedExtras(
 		slog.Info("managed mode: team tools registered")
 	}
 
+	ensureControlCenterSchema(stores.DB)
 	startControlCenterRollupRefresher(stores.DB)
 
 	// User workspace cache: invalidate per-user workspace path on profile changes
@@ -450,6 +451,76 @@ func wireManagedExtras(
 
 	slog.Info("managed mode: resolver + interceptors + cache subscribers wired")
 	return contextFileInterceptor
+}
+
+func ensureControlCenterSchema(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	stmts := []string{
+		`ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS sla_due_at TIMESTAMPTZ`,
+		`ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMPTZ`,
+		`ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ`,
+		`ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS escalation_reason TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_team_tasks_blocked_overdue
+			ON team_tasks (team_id, blocked_at)
+			WHERE status = 'blocked' AND escalated_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_team_tasks_sla_due
+			ON team_tasks (team_id, sla_due_at)
+			WHERE sla_due_at IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS team_task_operator_actions (
+			id UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+			task_id UUID NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
+			team_id UUID NOT NULL REFERENCES agent_teams(id) ON DELETE CASCADE,
+			actor_user_id VARCHAR(255) NOT NULL DEFAULT 'system',
+			action VARCHAR(50) NOT NULL,
+			details JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_operator_actions_task_created
+			ON team_task_operator_actions(task_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_operator_actions_team_created
+			ON team_task_operator_actions(team_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS control_center_rollup_state (
+			name VARCHAR(100) PRIMARY KEY,
+			last_refresh_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS cc_agent_trace_rollup AS
+		 SELECT
+			COALESCE(agent_id::text, 'unassigned') AS agent_id,
+			COUNT(*) AS run_count,
+			COUNT(*) FILTER (WHERE status = 'error') AS error_count,
+			COALESCE(SUM(total_input_tokens + total_output_tokens), 0) AS total_tokens,
+			COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::INT AS p95_duration_ms,
+			MAX(created_at) AS last_run_at
+		 FROM traces
+		 GROUP BY COALESCE(agent_id::text, 'unassigned')`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_agent_trace_rollup_agent ON cc_agent_trace_rollup(agent_id)`,
+		`CREATE MATERIALIZED VIEW IF NOT EXISTS cc_team_task_rollup AS
+		 SELECT
+			team_id,
+			status,
+			COUNT(*) AS task_count,
+			COUNT(*) FILTER (WHERE status = 'blocked' AND escalated_at IS NOT NULL) AS escalated_count,
+			MAX(updated_at) AS last_task_update_at
+		 FROM team_tasks
+		 GROUP BY team_id, status`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_team_task_rollup_key ON cc_team_task_rollup(team_id, status)`,
+		`INSERT INTO control_center_rollup_state (name, last_refresh_at)
+		 VALUES ('cc_agent_trace_rollup', NOW()), ('cc_team_task_rollup', NOW())
+		 ON CONFLICT (name) DO UPDATE SET last_refresh_at = EXCLUDED.last_refresh_at`,
+	}
+
+	for _, q := range stmts {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			slog.Warn("control-center schema ensure failed", "error", err)
+			return
+		}
+	}
+	slog.Info("control-center schema ensure complete")
 }
 
 func startControlCenterRollupRefresher(db *sql.DB) {
