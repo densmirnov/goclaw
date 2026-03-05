@@ -161,6 +161,9 @@ func (c *Config) applyEnvOverrides() {
 	// Database
 	envStr("GOCLAW_POSTGRES_DSN", &c.Database.PostgresDSN)
 	envStr("GOCLAW_MODE", &c.Database.Mode)
+	if c.Database.PostgresDSN != "" && c.Database.Mode == "" {
+		c.Database.Mode = "managed"
+	}
 
 	// Telemetry
 	envStr("GOCLAW_TELEMETRY_ENDPOINT", &c.Telemetry.Endpoint)

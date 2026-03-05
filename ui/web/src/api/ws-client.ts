@@ -28,6 +28,8 @@ export class WsClient {
   private readonly defaultTimeout = 30_000;
 
   onAuthFailure: (() => void) | null = null;
+  onRoleResolved: ((role: "admin" | "operator" | "viewer") => void) | null =
+    null;
 
   onPairingRequired: ((code: string, senderID: string) => void) | null = null;
 
@@ -116,7 +118,12 @@ export class WsClient {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new ApiError("AGENT_TIMEOUT", `${method} timed out after ${timeout}ms`));
+        reject(
+          new ApiError(
+            "AGENT_TIMEOUT",
+            `${method} timed out after ${timeout}ms`,
+          ),
+        );
       }, timeout);
 
       this.pending.set(id, {
@@ -125,9 +132,7 @@ export class WsClient {
         timeout: timer,
       });
 
-      this.ws!.send(
-        JSON.stringify({ type: "req", id, method, params }),
-      );
+      this.ws!.send(JSON.stringify({ type: "req", id, method, params }));
     });
   }
 
@@ -175,7 +180,11 @@ export class WsClient {
       if (this.connectGeneration !== generation) return;
 
       // Browser pairing: server requires approval
-      if (res?.status === "pending_pairing" && res.pairing_code && res.sender_id) {
+      if (
+        res?.status === "pending_pairing" &&
+        res.pairing_code &&
+        res.sender_id
+      ) {
         this.onPairingRequired?.(res.pairing_code, res.sender_id);
         // Keep connection alive for polling browser.pairing.status
         return;
@@ -190,6 +199,13 @@ export class WsClient {
       }
 
       this.authenticated = true;
+      const role =
+        res?.role === "admin" ||
+        res?.role === "operator" ||
+        res?.role === "viewer"
+          ? res.role
+          : "viewer";
+      this.onRoleResolved?.(role);
       this.onStateChange("connected");
     } catch {
       if (this.connectGeneration === generation) {

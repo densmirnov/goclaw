@@ -19,13 +19,10 @@ import { useWsCall } from "@/hooks/use-ws-call";
 import { useWsEvent } from "@/hooks/use-ws-event";
 import { useProviders } from "@/pages/providers/hooks/use-providers";
 import { useTraces } from "@/pages/traces/hooks/use-traces";
+import { useAgents } from "@/pages/agents/hooks/use-agents";
 import { Methods, Events } from "@/api/protocol";
 import { ROUTES } from "@/lib/constants";
-import {
-  formatRelativeTime,
-  formatTokens,
-  formatDuration,
-} from "@/lib/format";
+import { formatRelativeTime, formatTokens, formatDuration } from "@/lib/format";
 
 // --- Types ---
 
@@ -125,11 +122,7 @@ function QuotaBar({ used, limit }: { used: number; limit: number }) {
   }
   const pct = Math.min((used / limit) * 100, 100);
   const color =
-    pct > 85
-      ? "bg-red-500"
-      : pct > 60
-        ? "bg-amber-500"
-        : "bg-emerald-500";
+    pct > 85 ? "bg-red-500" : pct > 60 ? "bg-amber-500" : "bg-emerald-500";
   return (
     <div className="h-1.5 w-full rounded-full bg-muted">
       <div
@@ -142,9 +135,7 @@ function QuotaBar({ used, limit }: { used: number; limit: number }) {
 
 function QuotaCell({ usage }: { usage: QuotaUsage }) {
   const label =
-    usage.limit === 0
-      ? String(usage.used)
-      : `${usage.used}/${usage.limit}`;
+    usage.limit === 0 ? String(usage.used) : `${usage.used}/${usage.limit}`;
   return (
     <div className="space-y-1">
       <span className="text-sm tabular-nums">{label}</span>
@@ -168,17 +159,29 @@ function formatUptime(ms: number | undefined): string {
 
 export function OverviewPage() {
   const connected = useAuthStore((s) => s.connected);
-  const { call: fetchHealth, data: health } = useWsCall<HealthPayload>(Methods.HEALTH);
-  const { call: fetchStatus, data: status } = useWsCall<StatusPayload>(Methods.STATUS);
-  const { call: fetchQuota, data: quota } = useWsCall<QuotaUsageResult>(Methods.QUOTA_USAGE);
-  const { call: fetchCron, data: cronData } = useWsCall<CronListPayload>(Methods.CRON_LIST);
-  const { call: fetchChannels, data: channelStatusData } = useWsCall<ChannelStatusPayload>(Methods.CHANNELS_STATUS);
+  const { call: fetchHealth, data: health } = useWsCall<HealthPayload>(
+    Methods.HEALTH,
+  );
+  const { call: fetchStatus, data: status } = useWsCall<StatusPayload>(
+    Methods.STATUS,
+  );
+  const { call: fetchQuota, data: quota } = useWsCall<QuotaUsageResult>(
+    Methods.QUOTA_USAGE,
+  );
+  const { call: fetchCron, data: cronData } = useWsCall<CronListPayload>(
+    Methods.CRON_LIST,
+  );
+  const { call: fetchChannels, data: channelStatusData } =
+    useWsCall<ChannelStatusPayload>(Methods.CHANNELS_STATUS);
   const { providers, loading: providersLoading } = useProviders();
   const { traces } = useTraces({ limit: 8 });
+  const { agents: managedAgents } = useAgents();
 
   const hasNoProviders = !providersLoading && providers.length === 0;
   const hasNoEnabledProviders =
-    !providersLoading && providers.length > 0 && !providers.some((p) => p.enabled);
+    !providersLoading &&
+    providers.length > 0 &&
+    !providers.some((p) => p.enabled);
 
   useEffect(() => {
     if (connected) {
@@ -188,7 +191,14 @@ export function OverviewPage() {
       fetchCron({ includeDisabled: true });
       fetchChannels();
     }
-  }, [connected, fetchHealth, fetchStatus, fetchQuota, fetchCron, fetchChannels]);
+  }, [
+    connected,
+    fetchHealth,
+    fetchStatus,
+    fetchQuota,
+    fetchCron,
+    fetchChannels,
+  ]);
 
   const handleHealth = useCallback(() => {
     fetchHealth();
@@ -206,6 +216,12 @@ export function OverviewPage() {
   const channelsOnline = channelEntries.filter((c) => c.running).length;
   const cronJobs = cronData?.jobs ?? [];
   const enabledProviders = providers.filter((p) => p.enabled).length;
+  const errorTraces = traces.filter((t) => t.status === "error").slice(0, 5);
+  const lastActionByAgent = traces.reduce<Record<string, string>>((acc, t) => {
+    if (!t.agent_id || acc[t.agent_id]) return acc;
+    acc[t.agent_id] = t.name || t.output_preview || "completed run";
+    return acc;
+  }, {});
 
   return (
     <div className="space-y-6 p-6">
@@ -249,7 +265,11 @@ export function OverviewPage() {
           icon={Activity}
           label="Requests Today"
           value={quota?.requestsToday ?? 0}
-          sub={quota?.uniqueUsersToday ? `${quota.uniqueUsersToday} users` : undefined}
+          sub={
+            quota?.uniqueUsersToday
+              ? `${quota.uniqueUsersToday} users`
+              : undefined
+          }
         />
         <StatCard
           icon={Hash}
@@ -266,7 +286,9 @@ export function OverviewPage() {
         <StatCard
           icon={Bot}
           label="Agents"
-          value={agents.length > 0 ? `${runningAgents} / ${agents.length}` : "0"}
+          value={
+            agents.length > 0 ? `${runningAgents} / ${agents.length}` : "0"
+          }
           sub={agents.length > 0 ? "running" : undefined}
         />
         <StatCard
@@ -303,7 +325,9 @@ export function OverviewPage() {
                   {quota.entries.map((entry) => (
                     <tr key={entry.userId} className="border-b last:border-0">
                       <td className="py-3 pr-4">
-                        <span className="font-mono text-xs">{entry.userId}</span>
+                        <span className="font-mono text-xs">
+                          {entry.userId}
+                        </span>
                       </td>
                       <td className="py-3 px-4">
                         <QuotaCell usage={entry.hour} />
@@ -345,7 +369,9 @@ export function OverviewPage() {
                     <th className="pb-2 px-4 font-medium">User</th>
                     <th className="pb-2 px-4 font-medium">Channel</th>
                     <th className="pb-2 px-4 font-medium text-right">Tokens</th>
-                    <th className="pb-2 px-4 font-medium text-right">Duration</th>
+                    <th className="pb-2 px-4 font-medium text-right">
+                      Duration
+                    </th>
                     <th className="pb-2 pl-4 font-medium">Status</th>
                   </tr>
                 </thead>
@@ -363,7 +389,9 @@ export function OverviewPage() {
                       </td>
                       <td className="py-2.5 px-4">{t.channel || "—"}</td>
                       <td className="py-2.5 px-4 text-right tabular-nums">
-                        {formatTokens(t.total_input_tokens + t.total_output_tokens)}
+                        {formatTokens(
+                          t.total_input_tokens + t.total_output_tokens,
+                        )}
                       </td>
                       <td className="py-2.5 px-4 text-right tabular-nums">
                         {formatDuration(t.duration_ms)}
@@ -391,6 +419,127 @@ export function OverviewPage() {
         </Card>
       )}
 
+      {/* Admin Control Center */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Agents Control Center</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {managedAgents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No managed agents found
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="pb-2 pr-3 font-medium">Agent</th>
+                      <th className="pb-2 px-3 font-medium">Status</th>
+                      <th className="pb-2 px-3 font-medium">Owner</th>
+                      <th className="pb-2 pl-3 font-medium">Last Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {managedAgents.slice(0, 12).map((a) => (
+                      <tr key={a.id} className="border-b last:border-0">
+                        <td className="py-2.5 pr-3">
+                          <div className="max-w-[220px] truncate">
+                            {a.display_name || a.agent_key}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <StatusBadge
+                            status={
+                              a.status === "active" || a.status === "running"
+                                ? "success"
+                                : a.status === "error"
+                                  ? "error"
+                                  : "default"
+                            }
+                            label={a.status || "unknown"}
+                          />
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-xs">
+                          {a.owner_id || "—"}
+                        </td>
+                        <td className="py-2.5 pl-3 max-w-[280px] truncate text-muted-foreground">
+                          {lastActionByAgent[a.id] || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              Errors and Recent Activity
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Latest Errors
+              </h4>
+              {errorTraces.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No recent errors
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {errorTraces.map((t) => (
+                    <div key={t.id} className="rounded-md border p-2">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-mono text-muted-foreground">
+                          {t.agent_id || "unknown-agent"}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {formatRelativeTime(t.created_at)}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate text-sm">
+                        {t.name || "request error"}
+                      </div>
+                      {t.error && (
+                        <div className="mt-1 truncate text-xs text-red-500">
+                          {t.error}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Recent Actions
+              </h4>
+              <div className="space-y-1.5">
+                {traces.slice(0, 6).map((t) => (
+                  <div
+                    key={`action-${t.id}`}
+                    className="flex items-center justify-between text-sm"
+                  >
+                    <span className="truncate pr-3">
+                      {t.name || "agent run"}
+                    </span>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      {formatRelativeTime(t.created_at)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Bottom row: System + Cron */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* System */}
@@ -417,9 +566,7 @@ export function OverviewPage() {
               <div className="flex justify-between">
                 <dt className="text-muted-foreground">Providers</dt>
                 <dd className="font-medium">
-                  {enabledProviders > 0
-                    ? `${enabledProviders} active`
-                    : "none"}
+                  {enabledProviders > 0 ? `${enabledProviders} active` : "none"}
                 </dd>
               </div>
             </dl>
@@ -441,7 +588,9 @@ export function OverviewPage() {
           </CardHeader>
           <CardContent>
             {cronJobs.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No cron jobs configured</p>
+              <p className="text-sm text-muted-foreground">
+                No cron jobs configured
+              </p>
             ) : (
               <div className="space-y-2.5">
                 {cronJobs.slice(0, 5).map((job) => (
@@ -452,10 +601,14 @@ export function OverviewPage() {
                     <div className="flex items-center gap-2">
                       <span
                         className={`h-1.5 w-1.5 rounded-full ${
-                          job.enabled ? "bg-emerald-500" : "bg-muted-foreground/40"
+                          job.enabled
+                            ? "bg-emerald-500"
+                            : "bg-muted-foreground/40"
                         }`}
                       />
-                      <span className={job.enabled ? "" : "text-muted-foreground"}>
+                      <span
+                        className={job.enabled ? "" : "text-muted-foreground"}
+                      >
                         {job.name}
                       </span>
                     </div>
@@ -463,7 +616,9 @@ export function OverviewPage() {
                       {job.enabled && job.state.nextRunAtMs ? (
                         <>
                           <Timer className="h-3 w-3" />
-                          {formatRelativeTime(new Date(job.state.nextRunAtMs)).replace(" ago", "")}
+                          {formatRelativeTime(
+                            new Date(job.state.nextRunAtMs),
+                          ).replace(" ago", "")}
                         </>
                       ) : !job.enabled ? (
                         "disabled"

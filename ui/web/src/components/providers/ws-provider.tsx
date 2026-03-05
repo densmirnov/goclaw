@@ -25,10 +25,16 @@ export function WsProvider({ children }: { children: React.ReactNode }) {
       () => useAuthStore.getState().senderID,
       (state: ConnectionState) => {
         useAuthStore.getState().setConnected(state === "connected");
+        if (state !== "connected") {
+          useAuthStore.getState().setRole("viewer");
+        }
       },
     );
     wsRef.current.onAuthFailure = () => {
       useAuthStore.getState().logout();
+    };
+    wsRef.current.onRoleResolved = (role) => {
+      useAuthStore.getState().setRole(role);
     };
   }
   const ws = wsRef.current;
