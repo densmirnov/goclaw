@@ -465,18 +465,32 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
+
+		viewExists := func(ctx context.Context, name string) bool {
+			var reg sql.NullString
+			if err := db.QueryRowContext(ctx, "SELECT to_regclass($1)", name).Scan(&reg); err != nil {
+				slog.Debug("rollup.exists.check_failed", "view", name, "error", err)
+				return false
+			}
+			return reg.Valid && reg.String != ""
+		}
+
 		refresh := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_agent_trace_rollup"); err != nil {
-				slog.Debug("rollup.refresh.failed", "view", "cc_agent_trace_rollup", "error", err)
-			} else {
-				_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_agent_trace_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+			if viewExists(ctx, "cc_agent_trace_rollup") {
+				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_agent_trace_rollup"); err != nil {
+					slog.Debug("rollup.refresh.failed", "view", "cc_agent_trace_rollup", "error", err)
+				} else {
+					_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_agent_trace_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+				}
 			}
-			if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_team_task_rollup"); err != nil {
-				slog.Debug("rollup.refresh.failed", "view", "cc_team_task_rollup", "error", err)
-			} else {
-				_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_team_task_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+			if viewExists(ctx, "cc_team_task_rollup") {
+				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_team_task_rollup"); err != nil {
+					slog.Debug("rollup.refresh.failed", "view", "cc_team_task_rollup", "error", err)
+				} else {
+					_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_team_task_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+				}
 			}
 		}
 		refresh()
