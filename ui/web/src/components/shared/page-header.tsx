@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { APP_NAME } from "@/lib/branding";
+
 interface PageHeaderProps {
   title: string;
   description?: string;
@@ -5,6 +8,10 @@ interface PageHeaderProps {
 }
 
 export function PageHeader({ title, description, actions }: PageHeaderProps) {
+  useEffect(() => {
+    document.title = `${title} - ${APP_NAME}`;
+  }, [title]);
+
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
