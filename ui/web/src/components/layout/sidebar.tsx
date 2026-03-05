@@ -27,6 +27,7 @@ import { ROUTES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/use-auth-store";
 import { hasRole } from "@/lib/access";
+import { APP_NAME, APP_SHORT_NAME } from "@/lib/branding";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -47,9 +48,13 @@ export function Sidebar({ collapsed }: SidebarProps) {
       {/* Logo / title */}
       <div className="flex h-14 items-center border-b px-4">
         {!collapsed && (
-          <span className="text-base font-semibold tracking-tight">GoClaw</span>
+          <span className="text-base font-semibold tracking-tight">
+            {APP_NAME}
+          </span>
         )}
-        {collapsed && <span className="mx-auto text-lg font-bold">OC</span>}
+        {collapsed && (
+          <span className="mx-auto text-lg font-bold">{APP_SHORT_NAME}</span>
+        )}
       </div>
 
       {/* Nav items */}
