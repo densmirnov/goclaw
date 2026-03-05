@@ -665,11 +665,8 @@ teamRecoveryDone:
 	})
 
 	maxIter := l.maxIterations
-	if req.MaxIterations > 0 && req.MaxIterations < maxIter {
-		maxIter = req.MaxIterations
-	}
-
 	toolFreeMode := shouldUseToolFreeMode(req)
+	maxIter = chooseMaxIterations(maxIter, req, toolFreeMode)
 
 	// Tool policy/filtering is stable within a run.
 	// Build once to avoid repeated filtering/map allocations each iteration.
@@ -1178,27 +1175,111 @@ teamRecoveryDone:
 }
 
 func shouldUseToolFreeMode(req RunRequest) bool {
-	if req.Channel != "telegram" || req.PeerKind != "direct" || len(req.Media) > 0 {
+	if len(req.Media) > 0 {
 		return false
 	}
 	msg := strings.TrimSpace(strings.ToLower(req.Message))
 	if msg == "" || len(msg) > 120 {
 		return false
 	}
-	if strings.Contains(msg, "http://") || strings.Contains(msg, "https://") {
+	if strings.Contains(msg, "http://") || strings.Contains(msg, "https://") || isToolOrientedMessage(msg) {
 		return false
 	}
-	// Keep tools enabled for clearly task-oriented requests.
+	// Default behavior: only Telegram direct short turns.
+	if req.Channel == "telegram" && req.PeerKind == "direct" {
+		return true
+	}
+	// Optional global fast lane for other direct channels.
+	if envEnabled("GOCLAW_FAST_LANE_ALL_CHANNELS") && req.PeerKind != "group" {
+		return true
+	}
+	return false
+}
+
+func chooseMaxIterations(defaultMax int, req RunRequest, toolFreeMode bool) int {
+	maxIter := defaultMax
+	// Dynamic iteration budget is ON by default for lower latency.
+	// Set GOCLAW_DYNAMIC_MAX_ITER=0|false to disable.
+	if !envDisabled("GOCLAW_DYNAMIC_MAX_ITER") {
+		if dynamic := dynamicMaxIterationsForRequest(req, toolFreeMode, defaultMax); dynamic > 0 && dynamic < maxIter {
+			maxIter = dynamic
+		}
+	}
+	// Explicit per-request override always has final priority.
+	if req.MaxIterations > 0 && req.MaxIterations < maxIter {
+		maxIter = req.MaxIterations
+	}
+	if maxIter <= 0 {
+		return 1
+	}
+	return maxIter
+}
+
+func dynamicMaxIterationsForRequest(req RunRequest, toolFreeMode bool, defaultMax int) int {
+	if defaultMax <= 0 {
+		defaultMax = 20
+	}
+	msg := strings.TrimSpace(strings.ToLower(req.Message))
+	if toolFreeMode {
+		return 1
+	}
+	if len(req.Media) > 0 {
+		return defaultMax
+	}
+	if strings.Contains(msg, "http://") || strings.Contains(msg, "https://") {
+		return minInt(defaultMax, 4)
+	}
+	if isToolOrientedMessage(msg) {
+		if len(msg) <= 220 {
+			return minInt(defaultMax, 3)
+		}
+		return minInt(defaultMax, 4)
+	}
+	if len(msg) <= 160 {
+		return minInt(defaultMax, 2)
+	}
+	if len(msg) <= 480 {
+		return minInt(defaultMax, 3)
+	}
+	return defaultMax
+}
+
+func isToolOrientedMessage(lowerMsg string) bool {
 	for _, kw := range []string{
 		"file", "read", "write", "edit", "code", "bug", "deploy", "trace",
 		"cron", "search", "find", "memory", "tool", "api", "url", "link",
 		"файл", "код", "ошиб", "депло", "трейс", "поиск", "памят", "инструмент",
 	} {
-		if strings.Contains(msg, kw) {
-			return false
+		if strings.Contains(lowerMsg, kw) {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func envEnabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func envDisabled(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "0", "false", "no", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *Loop) shouldRunTeamRecoveryCheck(teamID uuid.UUID, userID string) bool {
