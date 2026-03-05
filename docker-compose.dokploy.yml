@@ -43,6 +43,7 @@ services:
       GOCLAW_GROQ_API_KEY: ${GOCLAW_GROQ_API_KEY:-}
       GOCLAW_TELEGRAM_TOKEN: ${GOCLAW_TELEGRAM_TOKEN:-}
       GOCLAW_TRACE_VERBOSE: ${GOCLAW_TRACE_VERBOSE:-0}
+      GOCLAW_AUTO_UPGRADE: "true"
     volumes:
       - goclaw-data:/app/data
       - goclaw-workspace:/app/.goclaw
