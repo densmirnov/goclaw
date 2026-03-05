@@ -21,6 +21,7 @@ GOCLAW_PPROF_ADDR=127.0.0.1:6060 ./goclaw gateway
 ```bash
 make bench-baseline
 make bench-pprof
+make bench-chat-profile
 ```
 
 Artifacts are saved under `benchmarks/results/<timestamp>/`.
@@ -30,10 +31,25 @@ Artifacts are saved under `benchmarks/results/<timestamp>/`.
 - `BASE_URL` (default `http://127.0.0.1:8080`)
 - `PPROF_URL` (default `http://127.0.0.1:6060`)
 - `GATEWAY_TOKEN` (optional; required if gateway token auth is enabled)
-- `BENCH_SCENARIOS` (comma-separated: `health,tools_invoke_web_fetch`)
+- `BENCH_SCENARIOS` (comma-separated: `health,tools_invoke_web_fetch,control_center,chat_completions`)
 - `VUS` (default `20`)
 - `DURATION` (default `60s`)
 - `WEB_FETCH_TARGET` (default `https://example.com`)
+- `BENCH_USER_ID` (default `bench-user`, required for managed chat benchmarks)
+- `BENCH_AGENT_ID` (default `default`)
+- `BENCH_MODEL` (default `goclaw:<BENCH_AGENT_ID>`)
+- `BENCH_MESSAGE` (default short no-tool prompt for loop latency baselines)
+
+## Chat Loop + pprof (single command)
+
+Run concurrent load for `/v1/chat/completions` and capture CPU/heap/alloc/goroutine profiles:
+
+```bash
+BASE_URL=http://127.0.0.1:8080 \
+PPROF_URL=http://127.0.0.1:6060 \
+GATEWAY_TOKEN=... \
+make bench-chat-profile
+```
 
 ## Compare two runs
 
@@ -42,3 +58,16 @@ make bench-compare BASE=benchmarks/results/<old_ts> NEW=benchmarks/results/<new_
 ```
 
 The compare report includes p50/p95 latency, req rate, failure rate, and a delta (%).
+
+## Regression Gate
+
+Fail CI/local check when latency or alloc profile regresses vs baseline:
+
+```bash
+make bench-regression-check BASE=benchmarks/results/<old_ts> NEW=benchmarks/results/<new_ts>
+```
+
+Optional limits:
+- `P95_DEGRADE_MAX_PCT` (default `15`)
+- `FAIL_RATE_DELTA_MAX` (default `0.01`)
+- `ALLOC_DEGRADE_MAX_PCT` (default `20`)

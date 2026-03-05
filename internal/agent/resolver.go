@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
@@ -21,13 +23,13 @@ import (
 
 // ResolverDeps holds shared dependencies for the managed-mode agent resolver.
 type ResolverDeps struct {
-	AgentStore  store.AgentStore
-	ProviderReg *providers.Registry
-	Bus         bus.EventPublisher
-	Sessions    store.SessionStore
-	Tools       *tools.Registry
-	ToolPolicy  *tools.PolicyEngine
-	Skills      *skills.Loader
+	AgentStore     store.AgentStore
+	ProviderReg    *providers.Registry
+	Bus            bus.EventPublisher
+	Sessions       store.SessionStore
+	Tools          *tools.Registry
+	ToolPolicy     *tools.PolicyEngine
+	Skills         *skills.Loader
 	HasMemory      bool
 	OnEvent        func(AgentEvent)
 	TraceCollector *tracing.Collector
@@ -67,6 +69,44 @@ type ResolverDeps struct {
 // NewManagedResolver creates a ResolverFunc that builds Loops from DB agent data.
 // This is the core of managed mode: agents are defined in Postgres, not config.json.
 func NewManagedResolver(deps ResolverDeps) ResolverFunc {
+	var builtinMu sync.Mutex
+	var builtinCached tools.BuiltinToolSettings
+	var builtinCachedAt time.Time
+
+	loadBuiltinSettings := func(ctx context.Context) tools.BuiltinToolSettings {
+		if deps.BuiltinToolStore == nil {
+			return nil
+		}
+
+		const builtinCacheTTL = time.Minute
+
+		builtinMu.Lock()
+		defer builtinMu.Unlock()
+
+		if builtinCached != nil && time.Since(builtinCachedAt) < builtinCacheTTL {
+			return cloneBuiltinToolSettings(builtinCached)
+		}
+
+		allTools, err := deps.BuiltinToolStore.List(ctx)
+		if err != nil {
+			slog.Warn("failed to load builtin tool settings", "error", err)
+			if builtinCached != nil {
+				return cloneBuiltinToolSettings(builtinCached)
+			}
+			return nil
+		}
+
+		next := make(tools.BuiltinToolSettings, len(allTools))
+		for _, t := range allTools {
+			if len(t.Settings) > 0 && string(t.Settings) != "{}" {
+				next[t.Name] = []byte(t.Settings)
+			}
+		}
+		builtinCached = next
+		builtinCachedAt = time.Now()
+		return cloneBuiltinToolSettings(next)
+	}
+
 	return func(agentKey string) (Agent, error) {
 		ctx := context.Background()
 
@@ -248,46 +288,36 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			}
 		}
 
-		// Load global builtin tool settings from DB (for settings cascade)
-		var builtinSettings tools.BuiltinToolSettings
-		if deps.BuiltinToolStore != nil {
-			if allTools, err := deps.BuiltinToolStore.List(ctx); err == nil {
-				builtinSettings = make(tools.BuiltinToolSettings, len(allTools))
-				for _, t := range allTools {
-					if len(t.Settings) > 0 && string(t.Settings) != "{}" {
-						builtinSettings[t.Name] = []byte(t.Settings)
-					}
-				}
-			}
-		}
+		// Load global builtin tool settings from cached resolver state.
+		builtinSettings := loadBuiltinSettings(ctx)
 
 		// Managed mode: SkillAllowList is nil (all filesystem skills available).
 		// Per-agent DB skill filtering is handled by skill_search tool via SkillAccessStore.
 
 		loop := NewLoop(LoopConfig{
-			ID:                ag.AgentKey,
-			AgentUUID:         ag.ID,
-			AgentType:         ag.AgentType,
-			Provider:          provider,
-			Model:             ag.Model,
-			ContextWindow:     contextWindow,
-			MaxIterations:     maxIter,
-			Workspace:         workspace,
-			Bus:               deps.Bus,
-			Sessions:          deps.Sessions,
-			Tools:             toolsReg,
-			ToolPolicy:        deps.ToolPolicy,
-			AgentToolPolicy:   ag.ParseToolsConfig(),
-			SkillsLoader:      deps.Skills,
+			ID:              ag.AgentKey,
+			AgentUUID:       ag.ID,
+			AgentType:       ag.AgentType,
+			Provider:        provider,
+			Model:           ag.Model,
+			ContextWindow:   contextWindow,
+			MaxIterations:   maxIter,
+			Workspace:       workspace,
+			Bus:             deps.Bus,
+			Sessions:        deps.Sessions,
+			Tools:           toolsReg,
+			ToolPolicy:      deps.ToolPolicy,
+			AgentToolPolicy: ag.ParseToolsConfig(),
+			SkillsLoader:    deps.Skills,
 			// SkillAllowList: nil = all filesystem skills (managed DB skill filtering via skill_search)
-			HasMemory:         hasMemory,
-			ContextFiles:      contextFiles,
-			EnsureUserFiles:   deps.EnsureUserFiles,
-			ContextFileLoader: deps.ContextFileLoader,
-			BootstrapCleanup:  deps.BootstrapCleanup,
-			OnEvent:           deps.OnEvent,
-			TraceCollector:    deps.TraceCollector,
-			InjectionAction:   deps.InjectionAction,
+			HasMemory:              hasMemory,
+			ContextFiles:           contextFiles,
+			EnsureUserFiles:        deps.EnsureUserFiles,
+			ContextFileLoader:      deps.ContextFileLoader,
+			BootstrapCleanup:       deps.BootstrapCleanup,
+			OnEvent:                deps.OnEvent,
+			TraceCollector:         deps.TraceCollector,
+			InjectionAction:        deps.InjectionAction,
 			MaxMessageChars:        deps.MaxMessageChars,
 			CompactionCfg:          compactionCfg,
 			ContextPruningCfg:      contextPruningCfg,
@@ -295,14 +325,30 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			SandboxContainerDir:    sandboxContainerDir,
 			SandboxWorkspaceAccess: sandboxWorkspaceAccess,
 			BuiltinToolSettings:    builtinSettings,
-			ThinkingLevel:         ag.ParseThinkingLevel(),
-			GroupWriterCache:      deps.GroupWriterCache,
-			TeamStore:             deps.TeamStore,
+			ThinkingLevel:          ag.ParseThinkingLevel(),
+			GroupWriterCache:       deps.GroupWriterCache,
+			TeamStore:              deps.TeamStore,
 		})
 
 		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)
 		return loop, nil
 	}
+}
+
+func cloneBuiltinToolSettings(in tools.BuiltinToolSettings) tools.BuiltinToolSettings {
+	if in == nil {
+		return nil
+	}
+	out := make(tools.BuiltinToolSettings, len(in))
+	for k, v := range in {
+		if len(v) == 0 {
+			continue
+		}
+		cp := make([]byte, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
 }
 
 // InvalidateAgent removes an agent from the router cache, forcing re-resolution.

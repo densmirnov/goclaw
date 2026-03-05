@@ -15,6 +15,9 @@
 3. `GET /v1/admin/control-center/agents`
 4. `GET /v1/admin/control-center/runs/live`
 5. `GET /v1/admin/control-center/tasks/kanban`
+6. `GET /v1/admin/control-center/health`
+7. `GET /v1/admin/control-center/slo-alerts`
+8. `GET /v1/admin/control-center/tools/latency`
 
 ## Контракты
 
@@ -124,6 +127,41 @@ Response:
     "team_count": 3,
     "team_id": ""
   }
+}
+```
+
+### 5) Tool Latency
+
+`GET /v1/admin/control-center/tools/latency?limit=50`
+
+Возвращает агрегированные метрики по инструментам:
+- `count`, `error_count`, `error_rate`
+- `avg_ms`, `p50_ms`, `p95_ms`, `max_ms`
+- `in_flight`, `max_in_flight`
+- histogram buckets: `bucket_upper_ms`, `bucket_counts`
+
+Response:
+
+```json
+{
+  "rows": [
+    {
+      "tool": "web_fetch",
+      "count": 1200,
+      "error_count": 12,
+      "error_rate": 0.01,
+      "avg_ms": 185.5,
+      "p50_ms": 100,
+      "p95_ms": 500,
+      "max_ms": 2400,
+      "in_flight": 0,
+      "max_in_flight": 6,
+      "bucket_upper_ms": [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000],
+      "bucket_counts": [5, 40, 120, 420, 430, 140, 35, 10, 0, 0]
+    }
+  ],
+  "total": 1,
+  "limit": 50
 }
 ```
 

@@ -46,3 +46,16 @@
 33. p95 для `overview` и `agents list` укладывается в целевой SLO.
 34. Все ключевые таблицы имеют индексы и explain-plan без full scan на hot-path.
 35. Есть документация API и операторский runbook в репозитории.
+
+## Итерация 4 (Stability + Performance агента)
+
+36. [x] Зафиксировать целевой профиль производительности для agent loop (latency p50/p95 + alloc profile).
+37. [x] Убрать лишние аллокации в hot-path run loop (повторная фильтрация инструментов/карты allowlist на итерацию).
+38. [x] Снизить частоту тяжёлых team recovery запросов без потери функциональности (throttle/cooldown).
+39. [x] Добавить кэш builtin tool settings в managed resolver (уменьшить DB roundtrips при lazy resolve).
+40. [x] Добавить k6-сценарий профилирования agent loop через `/v1/chat/completions` (managed mode) с отдельными threshold.
+41. [x] Добавить авто-сбор pprof cpu/heap/alloc во время chat-нагрузки и сводный отчёт.
+42. [x] Сделать regression-gate в CI/Makefile: fail при деградации p95 или alloc/op выше baseline.
+43. [x] Ввести fast-fail health checks для критичных фоновых циклов (rollup refresh, scheduler loops).
+44. [x] Добавить метрики очередей/задержек выполнения инструментов (tool latency histogram по имени инструмента).
+45. [x] Проверить N+1/избыточные запросы в `TeamStore.ListTasks` и добавить упрощённый путь для reminder-check.

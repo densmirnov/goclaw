@@ -32,6 +32,7 @@ import (
 // Bootstrap typically completes in 2-3 conversation turns.
 const bootstrapAutoCleanupTurns = 3
 const defaultLLMCallTimeout = 45 * time.Second
+const teamRecoveryCheckCooldown = 30 * time.Second
 
 // EnsureUserFilesFunc seeds per-user context files on first chat (managed mode).
 // Returns the effective workspace path (from user_agent_profiles) for caching.
@@ -43,6 +44,12 @@ type ContextFileLoaderFunc func(ctx context.Context, agentID uuid.UUID, userID, 
 // BootstrapCleanupFunc removes BOOTSTRAP.md after a successful first run.
 // Called automatically so the system doesn't rely on the LLM to delete it.
 type BootstrapCleanupFunc func(ctx context.Context, agentID uuid.UUID, userID string) error
+
+// teamTaskCounterStore is an optional fast path for reminder checks.
+// Implemented by PGTeamStore to avoid full ListTasks scans.
+type teamTaskCounterStore interface {
+	CountActiveTasks(ctx context.Context, teamID uuid.UUID, userID string) (pending int, inProgress int, err error)
+}
 
 // Loop is the agent execution loop for one agent instance.
 // Think → Act → Observe cycle with tool execution.
@@ -113,6 +120,10 @@ type Loop struct {
 
 	// Team store for cross-session pending task detection (managed mode)
 	teamStore store.TeamStore
+
+	// Team recovery reminder throttle (teamID:userID -> last check time).
+	// Reduces per-message DB scans for team leads.
+	teamRecoveryLastCheck sync.Map
 }
 
 // AgentEvent is emitted during agent execution for WS broadcasting.
@@ -548,42 +559,67 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	// so only truly un-spawned tasks remain pending.
 	if l.teamStore != nil && l.agentUUID != uuid.Nil {
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil && team.LeadAgentID == l.agentUUID {
-			if tasks, err := l.teamStore.ListTasks(ctx, team.ID, "newest", "", req.UserID); err == nil {
-				var stale []string
-				var inProgress []string
-				for _, t := range tasks {
-					if t.Status == store.TeamTaskStatusPending {
-						age := time.Since(t.CreatedAt).Truncate(time.Minute)
-						stale = append(stale, fmt.Sprintf("- %s: \"%s\" (pending %s)", t.ID, t.Subject, age))
+			if l.shouldRunTeamRecoveryCheck(team.ID, req.UserID) {
+				if counters, ok := l.teamStore.(teamTaskCounterStore); ok {
+					pending, inProgress, err := counters.CountActiveTasks(ctx, team.ID, req.UserID)
+					if err == nil && (pending > 0 || inProgress > 0) {
+						var parts []string
+						if pending > 0 {
+							parts = append(parts, fmt.Sprintf(
+								"You have %d pending team task(s) that were never spawned. Spawn each one, or cancel with team_tasks action=cancel if no longer needed.",
+								pending))
+						}
+						if inProgress > 0 {
+							parts = append(parts, fmt.Sprintf(
+								"You have %d in-progress team task(s) being handled by delegates. Their results will arrive automatically. Do NOT cancel, re-create, or re-spawn these tasks.",
+								inProgress))
+						}
+						reminder := "[System] " + strings.Join(parts, "\n\n")
+						messages = append(messages,
+							providers.Message{Role: "user", Content: reminder},
+							providers.Message{Role: "assistant", Content: "I see the task status. Let me handle accordingly."},
+						)
+						goto teamRecoveryDone
 					}
-					if t.Status == store.TeamTaskStatusInProgress {
-						age := time.Since(t.UpdatedAt).Truncate(time.Minute)
-						inProgress = append(inProgress, fmt.Sprintf("- %s: \"%s\" (in progress %s)", t.ID, t.Subject, age))
+				}
+				if tasks, err := l.teamStore.ListTasks(ctx, team.ID, "newest", "", req.UserID); err == nil {
+					var stale []string
+					var inProgress []string
+					for _, t := range tasks {
+						if t.Status == store.TeamTaskStatusPending {
+							age := time.Since(t.CreatedAt).Truncate(time.Minute)
+							stale = append(stale, fmt.Sprintf("- %s: \"%s\" (pending %s)", t.ID, t.Subject, age))
+						}
+						if t.Status == store.TeamTaskStatusInProgress {
+							age := time.Since(t.UpdatedAt).Truncate(time.Minute)
+							inProgress = append(inProgress, fmt.Sprintf("- %s: \"%s\" (in progress %s)", t.ID, t.Subject, age))
+						}
 					}
-				}
-				var parts []string
-				if len(stale) > 0 {
-					parts = append(parts, fmt.Sprintf(
-						"You have %d pending team task(s) that were never spawned:\n%s\n"+
-							"Spawn each one, or cancel with team_tasks action=cancel if no longer needed.",
-						len(stale), strings.Join(stale, "\n")))
-				}
-				if len(inProgress) > 0 {
-					parts = append(parts, fmt.Sprintf(
-						"You have %d in-progress team task(s) being handled by delegates:\n%s\n"+
-							"Their results will arrive automatically. Do NOT cancel, re-create, or re-spawn these tasks.",
-						len(inProgress), strings.Join(inProgress, "\n")))
-				}
-				if len(parts) > 0 {
-					reminder := "[System] " + strings.Join(parts, "\n\n")
-					messages = append(messages,
-						providers.Message{Role: "user", Content: reminder},
-						providers.Message{Role: "assistant", Content: "I see the task status. Let me handle accordingly."},
-					)
+					var parts []string
+					if len(stale) > 0 {
+						parts = append(parts, fmt.Sprintf(
+							"You have %d pending team task(s) that were never spawned:\n%s\n"+
+								"Spawn each one, or cancel with team_tasks action=cancel if no longer needed.",
+							len(stale), strings.Join(stale, "\n")))
+					}
+					if len(inProgress) > 0 {
+						parts = append(parts, fmt.Sprintf(
+							"You have %d in-progress team task(s) being handled by delegates:\n%s\n"+
+								"Their results will arrive automatically. Do NOT cancel, re-create, or re-spawn these tasks.",
+							len(inProgress), strings.Join(inProgress, "\n")))
+					}
+					if len(parts) > 0 {
+						reminder := "[System] " + strings.Join(parts, "\n\n")
+						messages = append(messages,
+							providers.Message{Role: "user", Content: reminder},
+							providers.Message{Role: "assistant", Content: "I see the task status. Let me handle accordingly."},
+						)
+					}
 				}
 			}
 		}
 	}
+teamRecoveryDone:
 
 	// 3. Buffer new messages — write to session only AFTER the run completes.
 	// This prevents concurrent runs from seeing each other's in-progress messages.
@@ -635,31 +671,31 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 
 	toolFreeMode := shouldUseToolFreeMode(req)
 
+	// Tool policy/filtering is stable within a run.
+	// Build once to avoid repeated filtering/map allocations each iteration.
+	var runToolDefs []providers.ToolDefinition
+	var runAllowedTools map[string]bool
+	switch {
+	case toolFreeMode:
+		runToolDefs = nil
+	case l.toolPolicy != nil:
+		runToolDefs = l.toolPolicy.FilterTools(l.tools, l.id, l.provider.Name(), l.agentToolPolicy, req.ToolAllow, false, false)
+		runAllowedTools = make(map[string]bool, len(runToolDefs))
+		for _, td := range runToolDefs {
+			runAllowedTools[td.Function.Name] = true
+		}
+	default:
+		runToolDefs = l.tools.ProviderDefs()
+	}
+
 	for iteration < maxIter {
 		iteration++
 
 		slog.Debug("agent iteration", "agent", l.id, "iteration", iteration, "messages", len(messages))
 
-		// Build provider request with policy-filtered tools
-		var toolDefs []providers.ToolDefinition
-		var allowedTools map[string]bool
-		if toolFreeMode {
-			// Telegram short conversational turns should prefer immediate direct answers.
-			// Disabling tools here avoids unnecessary tool loops and timeout-prone retries.
-			toolDefs = nil
-		} else if l.toolPolicy != nil {
-			toolDefs = l.toolPolicy.FilterTools(l.tools, l.id, l.provider.Name(), l.agentToolPolicy, req.ToolAllow, false, false)
-			allowedTools = make(map[string]bool, len(toolDefs))
-			for _, td := range toolDefs {
-				allowedTools[td.Function.Name] = true
-			}
-		} else {
-			toolDefs = l.tools.ProviderDefs()
-		}
-
 		chatReq := providers.ChatRequest{
 			Messages: messages,
-			Tools:    toolDefs,
+			Tools:    runToolDefs,
 			Model:    l.model,
 			Options: map[string]interface{}{
 				providers.OptMaxTokens:   8192,
@@ -848,7 +884,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 
 			toolSpanStart := time.Now().UTC()
 			var result *tools.Result
-			if allowedTools != nil && !allowedTools[tc.Name] {
+			if runAllowedTools != nil && !runAllowedTools[tc.Name] {
 				slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
 				result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
 			} else {
@@ -954,7 +990,7 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 					slog.Info("tool call", "agent", l.id, "tool", tc.Name, "args_len", len(argsJSON), "parallel", true)
 					spanStart := time.Now().UTC()
 					var result *tools.Result
-					if allowedTools != nil && !allowedTools[tc.Name] {
+					if runAllowedTools != nil && !runAllowedTools[tc.Name] {
 						slog.Warn("security.tool_policy_blocked", "agent", l.id, "tool", tc.Name)
 						result = tools.ErrorResult("tool not allowed by policy: " + tc.Name)
 					} else {
@@ -1162,6 +1198,18 @@ func shouldUseToolFreeMode(req RunRequest) bool {
 			return false
 		}
 	}
+	return true
+}
+
+func (l *Loop) shouldRunTeamRecoveryCheck(teamID uuid.UUID, userID string) bool {
+	key := teamID.String() + ":" + userID
+	now := time.Now()
+	if last, ok := l.teamRecoveryLastCheck.Load(key); ok {
+		if t, ok := last.(time.Time); ok && now.Sub(t) < teamRecoveryCheckCooldown {
+			return false
+		}
+	}
+	l.teamRecoveryLastCheck.Store(key, now)
 	return true
 }
 

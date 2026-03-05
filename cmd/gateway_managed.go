@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,13 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/tracing"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
+
+type backgroundLoopHealth struct {
+	lastSuccessUnix    atomic.Int64
+	consecutiveFailure atomic.Int64
+}
+
+var rollupRefresherHealth backgroundLoopHealth
 
 // wireManagedExtras wires managed-mode components that require PG stores:
 // agent resolver (lazy-creates Loops from DB), virtual FS interceptors, memory tools,
@@ -533,6 +541,14 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 			intervalSec = n
 		}
 	}
+	fastFail := os.Getenv("GOCLAW_BG_FAST_FAIL") == "1" || os.Getenv("GOCLAW_BG_FAST_FAIL") == "true"
+	fastFailAfter := 5
+	if raw := os.Getenv("GOCLAW_ROLLUP_FAST_FAIL_AFTER"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			fastFailAfter = n
+		}
+	}
+
 	go func() {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
@@ -549,19 +565,44 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 		refresh := func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			var failures int
+			var refreshed int
 			if viewExists(ctx, "cc_agent_trace_rollup") {
 				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_agent_trace_rollup"); err != nil {
 					slog.Debug("rollup.refresh.failed", "view", "cc_agent_trace_rollup", "error", err)
+					failures++
 				} else {
 					_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_agent_trace_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+					refreshed++
 				}
 			}
 			if viewExists(ctx, "cc_team_task_rollup") {
 				if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_team_task_rollup"); err != nil {
 					slog.Debug("rollup.refresh.failed", "view", "cc_team_task_rollup", "error", err)
+					failures++
 				} else {
 					_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_team_task_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+					refreshed++
 				}
+			}
+			if failures > 0 {
+				consecutive := rollupRefresherHealth.consecutiveFailure.Add(int64(failures))
+				slog.Warn("rollup.refresh.health.degraded",
+					"failures", failures,
+					"consecutive_failures", consecutive,
+					"refreshed", refreshed,
+					"fast_fail_enabled", fastFail,
+				)
+				if fastFail && consecutive >= int64(fastFailAfter) {
+					slog.Error("rollup.refresh.health.fast_fail",
+						"consecutive_failures", consecutive,
+						"threshold", fastFailAfter,
+					)
+					os.Exit(1)
+				}
+			} else if refreshed > 0 {
+				rollupRefresherHealth.consecutiveFailure.Store(0)
+				rollupRefresherHealth.lastSuccessUnix.Store(time.Now().Unix())
 			}
 		}
 		refresh()
@@ -569,7 +610,10 @@ func startControlCenterRollupRefresher(db *sql.DB) {
 			refresh()
 		}
 	}()
-	slog.Info("control-center rollup refresher started", "interval_sec", intervalSec)
+	slog.Info("control-center rollup refresher started",
+		"interval_sec", intervalSec,
+		"fast_fail_enabled", fastFail,
+		"fast_fail_after", fastFailAfter)
 }
 
 // wireManagedHTTP creates managed-mode HTTP handlers (agents + skills + traces + MCP + custom tools + channel instances + providers + delegations + builtin tools).

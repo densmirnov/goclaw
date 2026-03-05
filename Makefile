@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  = -s -w -X github.com/nextlevelbuilder/goclaw/cmd.Version=$(VERSION)
 BINARY   = goclaw
 
-.PHONY: build run clean version up down logs reset bench-baseline bench-pprof bench-compare bench-control-center smoke-control-center
+.PHONY: build run clean version up down logs reset bench-baseline bench-pprof bench-chat-profile bench-compare bench-regression-check bench-control-center smoke-control-center
 
 build:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $(BINARY) .
@@ -37,12 +37,22 @@ bench-baseline:
 bench-pprof:
 	@./benchmarks/scripts/bench_pprof.sh
 
+bench-chat-profile:
+	@./benchmarks/scripts/bench_chat_profile.sh
+
 bench-compare:
 	@if [ -z "$(BASE)" ] || [ -z "$(NEW)" ]; then \
 		echo "Usage: make bench-compare BASE=benchmarks/results/<old_ts> NEW=benchmarks/results/<new_ts>"; \
 		exit 1; \
 	fi
 	@BASE="$(BASE)" NEW="$(NEW)" ./benchmarks/scripts/bench_compare.sh
+
+bench-regression-check:
+	@if [ -z "$(BASE)" ] || [ -z "$(NEW)" ]; then \
+		echo "Usage: make bench-regression-check BASE=benchmarks/results/<old_ts> NEW=benchmarks/results/<new_ts>"; \
+		exit 1; \
+	fi
+	@BASE="$(BASE)" NEW="$(NEW)" ./benchmarks/scripts/bench_regression_gate.sh
 
 bench-control-center:
 	@./benchmarks/scripts/bench_control_center.sh

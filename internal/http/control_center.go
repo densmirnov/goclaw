@@ -14,6 +14,7 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
+	"github.com/nextlevelbuilder/goclaw/internal/tools"
 )
 
 type ControlCenterHandler struct {
@@ -51,6 +52,7 @@ func (h *ControlCenterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/control-center/health", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleHealthScore))
 	mux.HandleFunc("GET /v1/admin/control-center/freshness", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleFreshness))
 	mux.HandleFunc("GET /v1/admin/control-center/slo-alerts", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleSLOAlerts))
+	mux.HandleFunc("GET /v1/admin/control-center/tools/latency", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleToolLatency))
 	mux.HandleFunc("GET /v1/admin/control-center/schema-check", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleSchemaCheck))
 }
 
@@ -779,13 +781,19 @@ func (h *ControlCenterHandler) handleHealthScore(w http.ResponseWriter, r *http.
 	if score < 50 {
 		status = "critical"
 	}
+	toolLatency := tools.SnapshotToolLatencyMetrics()
+	topTools := toolLatency
+	if len(topTools) > 5 {
+		topTools = topTools[:5]
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"score":           score,
-		"status":          status,
-		"error_runs":      errors,
-		"trace_sample":    total,
-		"blocked_overdue": blockedOverdue,
-		"active_tasks":    activeTasks,
+		"score":            score,
+		"status":           status,
+		"error_runs":       errors,
+		"trace_sample":     total,
+		"blocked_overdue":  blockedOverdue,
+		"active_tasks":     activeTasks,
+		"tool_latency_top": topTools,
 	})
 }
 
@@ -886,6 +894,29 @@ func (h *ControlCenterHandler) handleSLOAlerts(w http.ResponseWriter, r *http.Re
 	if errorRate > maxErrorRate {
 		alerts = append(alerts, map[string]interface{}{"type": "error_rate", "value": errorRate, "threshold": maxErrorRate, "severity": "high"})
 	}
+	toolLatency := tools.SnapshotToolLatencyMetrics()
+	if len(toolLatency) > 0 {
+		maxToolP95MS := 3000
+		if raw := strings.TrimSpace(os.Getenv("GOCLAW_SLO_TOOL_P95_MS")); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				maxToolP95MS = n
+			}
+		}
+		for _, t := range toolLatency {
+			if t.Count < 10 {
+				continue
+			}
+			if t.P95MS > int64(maxToolP95MS) {
+				alerts = append(alerts, map[string]interface{}{
+					"type":      "tool_p95_latency",
+					"tool":      t.Tool,
+					"value":     t.P95MS,
+					"threshold": maxToolP95MS,
+					"severity":  "medium",
+				})
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"alerts":      alerts,
 		"sample_size": len(traces),
@@ -895,6 +926,24 @@ func (h *ControlCenterHandler) handleSLOAlerts(w http.ResponseWriter, r *http.Re
 			"p95_ms":     maxP95MS,
 			"error_rate": maxErrorRate,
 		},
+	})
+}
+
+func (h *ControlCenterHandler) handleToolLatency(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	items := tools.SnapshotToolLatencyMetrics()
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"rows":  items,
+		"total": len(items),
+		"limit": limit,
 	})
 }
 

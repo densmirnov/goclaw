@@ -101,8 +101,10 @@ func (r *Registry) ExecuteWithContext(ctx context.Context, name string, args map
 	}
 
 	start := time.Now()
+	RecordToolLatencyStart(name)
 	result := tool.Execute(ctx, args)
 	duration := time.Since(start)
+	RecordToolLatencyDone(name, duration, result.IsError)
 
 	// Scrub credentials from tool output before returning to LLM
 	if r.scrubbing {

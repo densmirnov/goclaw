@@ -232,6 +232,29 @@ func (s *PGTeamStore) CompleteTask(ctx context.Context, taskID, teamID uuid.UUID
 	return tx.Commit()
 }
 
+// CountActiveTasks returns lightweight counts for pending/in_progress tasks.
+// Used by agent reminder checks to avoid loading full task rows.
+func (s *PGTeamStore) CountActiveTasks(ctx context.Context, teamID uuid.UUID, userID string) (pending int, inProgress int, err error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT
+			COUNT(*) FILTER (WHERE status = $3) AS pending_count,
+			COUNT(*) FILTER (WHERE status = $4) AS in_progress_count
+		FROM team_tasks
+		WHERE team_id = $1
+		  AND status != $2
+		  AND ($5 = '' OR user_id = $5)`,
+		teamID,
+		store.TeamTaskStatusCompleted,
+		store.TeamTaskStatusPending,
+		store.TeamTaskStatusInProgress,
+		userID,
+	)
+	if scanErr := row.Scan(&pending, &inProgress); scanErr != nil {
+		return 0, 0, scanErr
+	}
+	return pending, inProgress, nil
+}
+
 func scanTaskRowsJoined(rows *sql.Rows) ([]store.TeamTaskData, error) {
 	var tasks []store.TeamTaskData
 	for rows.Next() {
