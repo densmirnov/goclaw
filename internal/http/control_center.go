@@ -1,6 +1,7 @@
 package http
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -20,15 +21,17 @@ type ControlCenterHandler struct {
 	traces   store.TracingStore
 	channels store.ChannelInstanceStore
 	teams    store.TeamStore
+	db       *sql.DB
 	token    string
 }
 
-func NewControlCenterHandler(agents store.AgentStore, traces store.TracingStore, channels store.ChannelInstanceStore, teams store.TeamStore, token string) *ControlCenterHandler {
+func NewControlCenterHandler(agents store.AgentStore, traces store.TracingStore, channels store.ChannelInstanceStore, teams store.TeamStore, db *sql.DB, token string) *ControlCenterHandler {
 	return &ControlCenterHandler{
 		agents:   agents,
 		traces:   traces,
 		channels: channels,
 		teams:    teams,
+		db:       db,
 		token:    token,
 	}
 }
@@ -48,6 +51,7 @@ func (h *ControlCenterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/control-center/health", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleHealthScore))
 	mux.HandleFunc("GET /v1/admin/control-center/freshness", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleFreshness))
 	mux.HandleFunc("GET /v1/admin/control-center/slo-alerts", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleSLOAlerts))
+	mux.HandleFunc("GET /v1/admin/control-center/schema-check", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleSchemaCheck))
 }
 
 type ccAgentItem struct {
@@ -890,6 +894,62 @@ func (h *ControlCenterHandler) handleSLOAlerts(w http.ResponseWriter, r *http.Re
 		"thresholds": map[string]interface{}{
 			"p95_ms":     maxP95MS,
 			"error_rate": maxErrorRate,
+		},
+	})
+}
+
+func (h *ControlCenterHandler) handleSchemaCheck(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "db is not available"})
+		return
+	}
+	var version int64
+	var dirty bool
+	if err := h.db.QueryRowContext(r.Context(), `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&version, &dirty); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to read schema_migrations"})
+		return
+	}
+
+	cols := make([]string, 0, 4)
+	rows, err := h.db.QueryContext(r.Context(), `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_name = 'team_tasks'
+		  AND column_name IN ('sla_due_at','blocked_at','escalated_at','escalation_reason')
+		ORDER BY column_name`)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check team_tasks columns"})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err == nil {
+			cols = append(cols, c)
+		}
+	}
+
+	var v1, v2, v3 sql.NullString
+	if err := h.db.QueryRowContext(r.Context(), `
+		SELECT
+		  to_regclass('public.cc_agent_trace_rollup'),
+		  to_regclass('public.cc_team_task_rollup'),
+		  to_regclass('public.team_task_operator_actions')
+	`).Scan(&v1, &v2, &v3); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check rollup/audit relations"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"schema_migrations": map[string]interface{}{
+			"version": version,
+			"dirty":   dirty,
+		},
+		"team_tasks_sla_columns": cols,
+		"relations": map[string]string{
+			"cc_agent_trace_rollup":      v1.String,
+			"cc_team_task_rollup":        v2.String,
+			"team_task_operator_actions": v3.String,
 		},
 	})
 }

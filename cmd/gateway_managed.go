@@ -630,7 +630,7 @@ func wireManagedHTTP(stores *store.Stores, token string, msgBus *bus.MessageBus,
 		builtinToolsH = httpapi.NewBuiltinToolsHandler(stores.BuiltinTools, token, msgBus)
 	}
 	if stores != nil && stores.Agents != nil && stores.Tracing != nil && stores.ChannelInstances != nil {
-		controlCenterH = httpapi.NewControlCenterHandler(stores.Agents, stores.Tracing, stores.ChannelInstances, stores.Teams, token)
+		controlCenterH = httpapi.NewControlCenterHandler(stores.Agents, stores.Tracing, stores.ChannelInstances, stores.Teams, stores.DB, token)
 	}
 
 	return agentsH, skillsH, tracesH, mcpH, customToolsH, channelInstancesH, providersH, delegationsH, builtinToolsH, controlCenterH

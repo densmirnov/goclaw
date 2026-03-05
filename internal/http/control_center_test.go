@@ -117,7 +117,7 @@ func TestControlCenter_KanbanAutoEscalatesBlockedTask(t *testing.T) {
 		},
 	}
 
-	h := NewControlCenterHandler(nil, nil, nil, st, "secret")
+	h := NewControlCenterHandler(nil, nil, nil, st, nil, "secret")
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -152,7 +152,7 @@ func TestControlCenter_BatchAndActionsEndpoint(t *testing.T) {
 		},
 	}
 
-	h := NewControlCenterHandler(nil, nil, nil, st, "secret")
+	h := NewControlCenterHandler(nil, nil, nil, st, nil, "secret")
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
