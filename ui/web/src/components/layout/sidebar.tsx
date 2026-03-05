@@ -19,6 +19,7 @@ import {
   Volume2,
   Cpu,
   ArrowRightLeft,
+  Workflow,
 } from "lucide-react";
 import { SidebarGroup } from "./sidebar-group";
 import { SidebarItem } from "./sidebar-item";
@@ -160,6 +161,14 @@ export function Sidebar({ collapsed }: SidebarProps) {
             label="Delegations"
             collapsed={collapsed}
           />
+          {canOperate && (
+            <SidebarItem
+              to={ROUTES.OPERATIONS}
+              icon={Workflow}
+              label="Operations"
+              collapsed={collapsed}
+            />
+          )}
           <SidebarItem
             to={ROUTES.USAGE}
             icon={BarChart3}

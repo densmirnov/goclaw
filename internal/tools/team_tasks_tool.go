@@ -278,6 +278,11 @@ func (t *TeamTasksTool) executeCreate(ctx context.Context, args map[string]inter
 		"subject": subject,
 		"status":  status,
 	})
+	t.manager.broadcastTeamEvent(protocol.EventTaskUpdated, map[string]string{
+		"team_id": team.ID.String(),
+		"task_id": task.ID.String(),
+		"status":  status,
+	})
 
 	return NewResult(fmt.Sprintf("Task created: %s (id=%s, status=%s)", subject, task.ID, status))
 }
@@ -300,6 +305,11 @@ func (t *TeamTasksTool) executeClaim(ctx context.Context, args map[string]interf
 	if err := t.manager.teamStore.ClaimTask(ctx, taskID, agentID, team.ID); err != nil {
 		return ErrorResult("failed to claim task: " + err.Error())
 	}
+	t.manager.broadcastTeamEvent(protocol.EventTaskUpdated, map[string]string{
+		"team_id": team.ID.String(),
+		"task_id": taskIDStr,
+		"status":  store.TeamTaskStatusInProgress,
+	})
 
 	return NewResult(fmt.Sprintf("Task %s claimed successfully. It is now in progress.", taskIDStr))
 }
@@ -337,6 +347,11 @@ func (t *TeamTasksTool) executeComplete(ctx context.Context, args map[string]int
 		"team_id": team.ID.String(),
 		"task_id": taskIDStr,
 	})
+	t.manager.broadcastTeamEvent(protocol.EventTaskUpdated, map[string]string{
+		"team_id": team.ID.String(),
+		"task_id": taskIDStr,
+		"status":  store.TeamTaskStatusCompleted,
+	})
 
 	return NewResult(fmt.Sprintf("Task %s completed. Dependent tasks have been unblocked.", taskIDStr))
 }
@@ -371,6 +386,11 @@ func (t *TeamTasksTool) executeCancel(ctx context.Context, args map[string]inter
 	t.manager.broadcastTeamEvent(protocol.EventTeamTaskCompleted, map[string]string{
 		"team_id": team.ID.String(),
 		"task_id": taskIDStr,
+	})
+	t.manager.broadcastTeamEvent(protocol.EventTaskUpdated, map[string]string{
+		"team_id": team.ID.String(),
+		"task_id": taskIDStr,
+		"status":  store.TeamTaskStatusCompleted,
 	})
 
 	return NewResult(fmt.Sprintf("Task %s cancelled.", taskIDStr))

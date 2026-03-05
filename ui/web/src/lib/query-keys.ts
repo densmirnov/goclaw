@@ -1,7 +1,8 @@
 export const queryKeys = {
   providers: {
     all: ["providers"] as const,
-    models: (providerId: string) => ["providers", providerId, "models"] as const,
+    models: (providerId: string) =>
+      ["providers", providerId, "models"] as const,
   },
   agents: {
     all: ["agents"] as const,
@@ -47,7 +48,8 @@ export const queryKeys = {
   },
   usage: {
     all: ["usage"] as const,
-    records: (params: Record<string, unknown>) => ["usage", "records", params] as const,
+    records: (params: Record<string, unknown>) =>
+      ["usage", "records", params] as const,
   },
   delegations: {
     all: ["delegations"] as const,
@@ -56,5 +58,11 @@ export const queryKeys = {
   teams: {
     all: ["teams"] as const,
     detail: (id: string) => ["teams", id] as const,
+  },
+  controlCenter: {
+    all: ["controlCenter"] as const,
+    overview: ["controlCenter", "overview"] as const,
+    liveRuns: ["controlCenter", "runs", "live"] as const,
+    kanban: ["controlCenter", "tasks", "kanban"] as const,
   },
 };

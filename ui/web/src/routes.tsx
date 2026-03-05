@@ -85,6 +85,11 @@ const DelegationsPage = lazy(() =>
     default: m.DelegationsPage,
   })),
 );
+const OperationsPage = lazy(() =>
+  import("@/pages/operations/operations-page").then((m) => ({
+    default: m.OperationsPage,
+  })),
+);
 
 function PageLoader() {
   return (
@@ -186,6 +191,14 @@ export function AppRoutes() {
             element={<TracesPage key="detail" />}
           />
           <Route path={ROUTES.DELEGATIONS} element={<DelegationsPage />} />
+          <Route
+            path={ROUTES.OPERATIONS}
+            element={
+              <RequireRole minRole="operator">
+                <OperationsPage />
+              </RequireRole>
+            }
+          />
           <Route path={ROUTES.USAGE} element={<UsagePage />} />
           <Route
             path={ROUTES.CHANNELS}

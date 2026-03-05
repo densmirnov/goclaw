@@ -167,6 +167,8 @@ export const Events = {
   HEARTBEAT: "heartbeat",
   TALK_MODE: "talk.mode",
   HANDOFF: "handoff",
+  RUN_UPDATED: "run.updated",
+  TASK_UPDATED: "task.updated",
 } as const;
 
 // Agent event subtypes (in payload.type)

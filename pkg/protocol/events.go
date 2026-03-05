@@ -2,23 +2,23 @@ package protocol
 
 // WebSocket event names pushed from server to client.
 const (
-	EventAgent              = "agent"
-	EventChat               = "chat"
-	EventHealth             = "health"
-	EventCron               = "cron"
-	EventExecApprovalReq    = "exec.approval.requested"
-	EventExecApprovalRes    = "exec.approval.resolved"
-	EventPresence           = "presence"
-	EventTick               = "tick"
-	EventShutdown           = "shutdown"
-	EventNodePairRequested  = "node.pair.requested"
-	EventNodePairResolved   = "node.pair.resolved"
-	EventDevicePairReq      = "device.pair.requested"
-	EventDevicePairRes      = "device.pair.resolved"
-	EventVoicewakeChanged   = "voicewake.changed"
-	EventConnectChallenge   = "connect.challenge"
-	EventHeartbeat          = "heartbeat"
-	EventTalkMode           = "talk.mode"
+	EventAgent             = "agent"
+	EventChat              = "chat"
+	EventHealth            = "health"
+	EventCron              = "cron"
+	EventExecApprovalReq   = "exec.approval.requested"
+	EventExecApprovalRes   = "exec.approval.resolved"
+	EventPresence          = "presence"
+	EventTick              = "tick"
+	EventShutdown          = "shutdown"
+	EventNodePairRequested = "node.pair.requested"
+	EventNodePairResolved  = "node.pair.resolved"
+	EventDevicePairReq     = "device.pair.requested"
+	EventDevicePairRes     = "device.pair.resolved"
+	EventVoicewakeChanged  = "voicewake.changed"
+	EventConnectChallenge  = "connect.challenge"
+	EventHeartbeat         = "heartbeat"
+	EventTalkMode          = "talk.mode"
 
 	// Agent summoning events (predefined agent setup via LLM).
 	EventAgentSummoning = "agent.summoning"
@@ -32,6 +32,8 @@ const (
 	EventTeamMessageSent     = "team.message.sent"
 	EventDelegationStarted   = "delegation.started"
 	EventDelegationCompleted = "delegation.completed"
+	EventRunUpdated          = "run.updated"
+	EventTaskUpdated         = "task.updated"
 
 	// Cache invalidation events (internal, not forwarded to WS clients).
 	EventCacheInvalidate = "cache.invalidate"
@@ -53,7 +55,7 @@ const (
 
 // Chat event subtypes (in payload.type)
 const (
-	ChatEventChunk     = "chunk"
-	ChatEventMessage   = "message"
-	ChatEventThinking  = "thinking"
+	ChatEventChunk    = "chunk"
+	ChatEventMessage  = "message"
+	ChatEventThinking = "thinking"
 )

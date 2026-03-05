@@ -26,4 +26,11 @@ export function useWsQueryInvalidation() {
   );
 
   useWsEvent(Events.AGENT, handleAgentEvent);
+
+  const handleControlCenterEvent = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.controlCenter.all });
+  }, [queryClient]);
+
+  useWsEvent(Events.RUN_UPDATED, handleControlCenterEvent);
+  useWsEvent(Events.TASK_UPDATED, handleControlCenterEvent);
 }

@@ -112,6 +112,14 @@ func wireManagedExtras(
 				Name:    protocol.EventAgent,
 				Payload: event,
 			})
+			msgBus.Broadcast(bus.Event{
+				Name: protocol.EventRunUpdated,
+				Payload: map[string]interface{}{
+					"type":     event.Type,
+					"agent_id": event.AgentID,
+					"run_id":   event.RunID,
+				},
+			})
 		},
 	})
 	agentRouter.SetResolver(resolver)
@@ -496,7 +504,7 @@ func wireManagedHTTP(stores *store.Stores, token string, msgBus *bus.MessageBus,
 		builtinToolsH = httpapi.NewBuiltinToolsHandler(stores.BuiltinTools, token, msgBus)
 	}
 	if stores != nil && stores.Agents != nil && stores.Tracing != nil && stores.ChannelInstances != nil {
-		controlCenterH = httpapi.NewControlCenterHandler(stores.Agents, stores.Tracing, stores.ChannelInstances, token)
+		controlCenterH = httpapi.NewControlCenterHandler(stores.Agents, stores.Tracing, stores.ChannelInstances, stores.Teams, token)
 	}
 
 	return agentsH, skillsH, tracesH, mcpH, customToolsH, channelInstancesH, providersH, delegationsH, builtinToolsH, controlCenterH

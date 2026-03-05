@@ -204,7 +204,7 @@ export function OverviewPage() {
           name?: string;
           created_at: string;
         }>;
-      }>("/v1/admin/control-center"),
+      }>("/v1/admin/control-center/overview"),
     enabled: connected && role === "admin",
     retry: false,
   });
