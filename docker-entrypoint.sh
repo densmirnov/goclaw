@@ -20,8 +20,7 @@ case "${1:-serve}" in
       done
 
       echo "Managed mode: running upgrade..."
-      /app/goclaw upgrade || \
-        echo "Upgrade warning (may already be up-to-date)"
+      /app/goclaw upgrade
     fi
     exec /app/goclaw
     ;;
