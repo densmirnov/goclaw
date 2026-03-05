@@ -3,8 +3,10 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -37,6 +39,7 @@ func (h *ControlCenterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/control-center/runs/live", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleLiveRuns))
 	mux.HandleFunc("GET /v1/admin/control-center/tasks/kanban", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleKanban))
 	mux.HandleFunc("POST /v1/admin/control-center/tasks/batch", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleTaskBatch))
+	mux.HandleFunc("GET /v1/admin/control-center/tasks/actions", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleTaskActions))
 }
 
 type ccAgentItem struct {
@@ -134,6 +137,16 @@ func (h *ControlCenterHandler) loadOverviewData(r *http.Request, traceLimit int)
 }
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"
+
+func blockedEscalationThreshold() time.Duration {
+	sec := 1800
+	if raw := strings.TrimSpace(os.Getenv("GOCLAW_BLOCKED_ESCALATION_SEC")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			sec = n
+		}
+	}
+	return time.Duration(sec) * time.Second
+}
 
 func (h *ControlCenterHandler) handleOverview(w http.ResponseWriter, r *http.Request) {
 	agentItems, errors, actions, chTotal, chEnabled, err := h.loadOverviewData(r, 100)
@@ -309,6 +322,27 @@ func (h *ControlCenterHandler) handleKanban(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		for _, t := range tasks {
+			if t.Status == store.TeamTaskStatusBlocked && t.BlockedAt != nil && t.EscalatedAt == nil {
+				if time.Since(*t.BlockedAt) > blockedEscalationThreshold() {
+					now := time.Now().UTC()
+					_ = h.teams.UpdateTask(r.Context(), t.ID, map[string]any{
+						"escalated_at":      now,
+						"escalation_reason": "blocked_threshold",
+					})
+					_ = h.teams.AppendTaskOperatorAction(r.Context(), &store.TeamTaskOperatorActionData{
+						TaskID:      t.ID,
+						TeamID:      t.TeamID,
+						ActorUserID: "system",
+						Action:      "auto_escalate",
+						Details: map[string]interface{}{
+							"reason":     "blocked_threshold",
+							"blocked_at": t.BlockedAt.UTC().Format(timeFormat),
+						},
+					})
+					t.EscalatedAt = &now
+					t.EscalationReason = "blocked_threshold"
+				}
+			}
 			ownerID := ""
 			if t.OwnerAgentID != nil {
 				ownerID = t.OwnerAgentID.String()
@@ -393,15 +427,35 @@ func (h *ControlCenterHandler) handleTaskBatch(w http.ResponseWriter, r *http.Re
 		case "reassign":
 			updates["owner_agent_id"] = *newOwner
 			updates["status"] = store.TeamTaskStatusInProgress
+			updates["blocked_at"] = nil
 		case "pause":
 			updates["status"] = store.TeamTaskStatusBlocked
+			updates["blocked_at"] = time.Now().UTC()
 		case "escalate":
 			updates["status"] = store.TeamTaskStatusBlocked
+			updates["blocked_at"] = time.Now().UTC()
+			updates["escalated_at"] = time.Now().UTC()
+			updates["escalation_reason"] = "manual"
 		}
 		if err := h.teams.UpdateTask(r.Context(), task.ID, updates); err != nil {
 			failed = append(failed, map[string]string{"task_id": taskIDStr, "error": err.Error()})
 			continue
 		}
+		actor := store.UserIDFromContext(r.Context())
+		if strings.TrimSpace(actor) == "" {
+			actor = "admin"
+		}
+		details := map[string]interface{}{}
+		if action == "reassign" {
+			details["owner_agent_id"] = newOwner.String()
+		}
+		_ = h.teams.AppendTaskOperatorAction(r.Context(), &store.TeamTaskOperatorActionData{
+			TaskID:      task.ID,
+			TeamID:      task.TeamID,
+			ActorUserID: actor,
+			Action:      action,
+			Details:     details,
+		})
 		updated++
 	}
 
@@ -409,5 +463,58 @@ func (h *ControlCenterHandler) handleTaskBatch(w http.ResponseWriter, r *http.Re
 		"updated": updated,
 		"failed":  failed,
 		"action":  action,
+	})
+}
+
+func (h *ControlCenterHandler) handleTaskActions(w http.ResponseWriter, r *http.Request) {
+	if h.teams == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "team store is not available"})
+		return
+	}
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	var teamID *uuid.UUID
+	if raw := strings.TrimSpace(r.URL.Query().Get("team_id")); raw != "" {
+		tid, err := uuid.Parse(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid team_id"})
+			return
+		}
+		teamID = &tid
+	}
+	actions, err := h.teams.ListTaskOperatorActions(r.Context(), teamID, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load task actions"})
+		return
+	}
+	type actionItem struct {
+		ID          string                 `json:"id"`
+		TaskID      string                 `json:"task_id"`
+		TeamID      string                 `json:"team_id"`
+		ActorUserID string                 `json:"actor_user_id"`
+		Action      string                 `json:"action"`
+		Details     map[string]interface{} `json:"details,omitempty"`
+		CreatedAt   string                 `json:"created_at"`
+	}
+	out := make([]actionItem, 0, len(actions))
+	for _, a := range actions {
+		out = append(out, actionItem{
+			ID:          a.ID.String(),
+			TaskID:      a.TaskID.String(),
+			TeamID:      a.TeamID.String(),
+			ActorUserID: a.ActorUserID,
+			Action:      a.Action,
+			Details:     a.Details,
+			CreatedAt:   a.CreatedAt.Format(timeFormat),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"actions": out,
+		"total":   len(out),
+		"limit":   limit,
 	})
 }

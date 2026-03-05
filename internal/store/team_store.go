@@ -71,20 +71,35 @@ type TeamMemberData struct {
 // TeamTaskData represents a task in the team's shared task list.
 type TeamTaskData struct {
 	BaseModel
-	TeamID       uuid.UUID              `json:"team_id"`
-	Subject      string                 `json:"subject"`
-	Description  string                 `json:"description,omitempty"`
-	Status       string                 `json:"status"`
-	OwnerAgentID *uuid.UUID             `json:"owner_agent_id,omitempty"`
-	BlockedBy    []uuid.UUID            `json:"blocked_by,omitempty"`
-	Priority     int                    `json:"priority"`
-	Result       *string                `json:"result,omitempty"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
-	UserID       string                 `json:"user_id,omitempty"`
-	Channel      string                 `json:"channel,omitempty"`
+	TeamID           uuid.UUID              `json:"team_id"`
+	Subject          string                 `json:"subject"`
+	Description      string                 `json:"description,omitempty"`
+	Status           string                 `json:"status"`
+	OwnerAgentID     *uuid.UUID             `json:"owner_agent_id,omitempty"`
+	BlockedBy        []uuid.UUID            `json:"blocked_by,omitempty"`
+	Priority         int                    `json:"priority"`
+	Result           *string                `json:"result,omitempty"`
+	Metadata         map[string]interface{} `json:"metadata,omitempty"`
+	UserID           string                 `json:"user_id,omitempty"`
+	Channel          string                 `json:"channel,omitempty"`
+	SLADueAt         *time.Time             `json:"sla_due_at,omitempty"`
+	BlockedAt        *time.Time             `json:"blocked_at,omitempty"`
+	EscalatedAt      *time.Time             `json:"escalated_at,omitempty"`
+	EscalationReason string                 `json:"escalation_reason,omitempty"`
 
 	// Joined fields
 	OwnerAgentKey string `json:"owner_agent_key,omitempty"`
+}
+
+// TeamTaskOperatorActionData stores auditable operator actions on tasks.
+type TeamTaskOperatorActionData struct {
+	ID          uuid.UUID              `json:"id"`
+	TaskID      uuid.UUID              `json:"task_id"`
+	TeamID      uuid.UUID              `json:"team_id"`
+	ActorUserID string                 `json:"actor_user_id"`
+	Action      string                 `json:"action"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	CreatedAt   time.Time              `json:"created_at"`
 }
 
 // DelegationHistoryData represents a persisted delegation record.
@@ -196,6 +211,8 @@ type TeamStore interface {
 	// CompleteTask marks a task as completed and unblocks dependent tasks.
 	// teamID is validated in the WHERE clause to prevent cross-team task completion.
 	CompleteTask(ctx context.Context, taskID, teamID uuid.UUID, result string) error
+	AppendTaskOperatorAction(ctx context.Context, action *TeamTaskOperatorActionData) error
+	ListTaskOperatorActions(ctx context.Context, teamID *uuid.UUID, limit int) ([]TeamTaskOperatorActionData, error)
 
 	// Delegation history
 	SaveDelegationHistory(ctx context.Context, record *DelegationHistoryData) error

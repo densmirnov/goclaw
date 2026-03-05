@@ -31,6 +31,16 @@ interface KanbanTask {
   updated_at: string;
 }
 
+interface TaskAction {
+  id: string;
+  task_id: string;
+  team_id: string;
+  actor_user_id: string;
+  action: string;
+  details?: Record<string, unknown>;
+  created_at: string;
+}
+
 export function OperationsPage() {
   const http = useHttp();
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
@@ -43,12 +53,20 @@ export function OperationsPage() {
       ),
     refetchInterval: 3000,
   });
-  const { data: kanban } = useQuery({
+  const { data: kanban, refetch: refetchKanban } = useQuery({
     queryKey: ["control-center-kanban"],
     queryFn: async () =>
       http.get<{
         columns: Record<string, KanbanTask[]>;
       }>("/v1/admin/control-center/tasks/kanban"),
+    refetchInterval: 5000,
+  });
+  const { data: actions, refetch: refetchActions } = useQuery({
+    queryKey: ["control-center-task-actions"],
+    queryFn: async () =>
+      http.get<{ actions: TaskAction[]; total: number; limit: number }>(
+        "/v1/admin/control-center/tasks/actions?limit=20",
+      ),
     refetchInterval: 5000,
   });
 
@@ -63,7 +81,7 @@ export function OperationsPage() {
     }
     await http.post("/v1/admin/control-center/tasks/batch", payload);
     setSelectedTaskIds([]);
-    await refetch();
+    await Promise.all([refetch(), refetchKanban(), refetchActions()]);
   }
 
   return (
@@ -238,6 +256,36 @@ export function OperationsPage() {
               );
             })}
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Operator Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {(actions?.actions ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No actions yet</p>
+          ) : (
+            <div className="space-y-2">
+              {(actions?.actions ?? []).map((a) => (
+                <div
+                  key={a.id}
+                  className="rounded border bg-background p-2 text-sm"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{a.action}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {formatRelativeTime(a.created_at)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    actor: {a.actor_user_id} · task: {a.task_id.slice(0, 8)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
