@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,8 @@ func (h *ControlCenterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/control-center/delegation-map", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleDelegationMap))
 	mux.HandleFunc("GET /v1/admin/control-center/cost", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleCost))
 	mux.HandleFunc("GET /v1/admin/control-center/health", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleHealthScore))
+	mux.HandleFunc("GET /v1/admin/control-center/freshness", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleFreshness))
+	mux.HandleFunc("GET /v1/admin/control-center/slo-alerts", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleSLOAlerts))
 }
 
 type ccAgentItem struct {
@@ -779,5 +782,114 @@ func (h *ControlCenterHandler) handleHealthScore(w http.ResponseWriter, r *http.
 		"trace_sample":    total,
 		"blocked_overdue": blockedOverdue,
 		"active_tasks":    activeTasks,
+	})
+}
+
+func (h *ControlCenterHandler) handleFreshness(w http.ResponseWriter, r *http.Request) {
+	var lastTraceAt *time.Time
+	var lastTaskAt *time.Time
+
+	if h.traces != nil {
+		if traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 1, Offset: 0}); err == nil && len(traces) > 0 {
+			t := traces[0].CreatedAt.UTC()
+			lastTraceAt = &t
+		}
+	}
+	if h.teams != nil {
+		if teams, err := h.teams.ListTeams(r.Context()); err == nil {
+			for _, tm := range teams {
+				if tasks, err := h.teams.ListTasks(r.Context(), tm.ID, "newest", store.TeamTaskFilterAll, ""); err == nil {
+					for _, t := range tasks {
+						if lastTaskAt == nil || t.UpdatedAt.After(*lastTaskAt) {
+							tt := t.UpdatedAt.UTC()
+							lastTaskAt = &tt
+						}
+					}
+				}
+			}
+		}
+	}
+	now := time.Now().UTC()
+	secSinceTrace := -1
+	secSinceTask := -1
+	if lastTraceAt != nil {
+		secSinceTrace = int(now.Sub(*lastTraceAt).Seconds())
+	}
+	if lastTaskAt != nil {
+		secSinceTask = int(now.Sub(*lastTaskAt).Seconds())
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"last_trace_at":       formatOptionalTime(lastTraceAt),
+		"last_task_update_at": formatOptionalTime(lastTaskAt),
+		"seconds_since_trace": secSinceTrace,
+		"seconds_since_task":  secSinceTask,
+	})
+}
+
+func formatOptionalTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(timeFormat)
+}
+
+func (h *ControlCenterHandler) handleSLOAlerts(w http.ResponseWriter, r *http.Request) {
+	if h.traces == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tracing store is not available"})
+		return
+	}
+	traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 500, Offset: 0})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load traces for slo alerts"})
+		return
+	}
+	if len(traces) == 0 {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": []map[string]interface{}{}})
+		return
+	}
+	durations := make([]int, 0, len(traces))
+	errors := 0
+	for _, tr := range traces {
+		durations = append(durations, tr.DurationMS)
+		if tr.Status == store.TraceStatusError {
+			errors++
+		}
+	}
+	sort.Ints(durations)
+	p95Idx := int(0.95 * float64(len(durations)-1))
+	if p95Idx < 0 {
+		p95Idx = 0
+	}
+	p95 := durations[p95Idx]
+	errorRate := float64(errors) / float64(len(traces))
+
+	maxP95MS := 5000
+	if raw := strings.TrimSpace(os.Getenv("GOCLAW_SLO_P95_MS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxP95MS = n
+		}
+	}
+	maxErrorRate := 0.03
+	if raw := strings.TrimSpace(os.Getenv("GOCLAW_SLO_ERROR_RATE")); raw != "" {
+		if n, err := strconv.ParseFloat(raw, 64); err == nil && n > 0 {
+			maxErrorRate = n
+		}
+	}
+	alerts := make([]map[string]interface{}, 0, 3)
+	if p95 > maxP95MS {
+		alerts = append(alerts, map[string]interface{}{"type": "p95_latency", "value": p95, "threshold": maxP95MS, "severity": "high"})
+	}
+	if errorRate > maxErrorRate {
+		alerts = append(alerts, map[string]interface{}{"type": "error_rate", "value": errorRate, "threshold": maxErrorRate, "severity": "high"})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"alerts":      alerts,
+		"sample_size": len(traces),
+		"p95_ms":      p95,
+		"error_rate":  errorRate,
+		"thresholds": map[string]interface{}{
+			"p95_ms":     maxP95MS,
+			"error_rate": maxErrorRate,
+		},
 	})
 }

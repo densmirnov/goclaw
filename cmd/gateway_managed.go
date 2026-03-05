@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
+	"os"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -410,6 +414,8 @@ func wireManagedExtras(
 		slog.Info("managed mode: team tools registered")
 	}
 
+	startControlCenterRollupRefresher(stores.DB)
+
 	// User workspace cache: invalidate per-user workspace path on profile changes
 	msgBus.Subscribe(bus.TopicCacheUserWorkspace, func(event bus.Event) {
 		if event.Name != protocol.EventCacheInvalidate {
@@ -444,6 +450,41 @@ func wireManagedExtras(
 
 	slog.Info("managed mode: resolver + interceptors + cache subscribers wired")
 	return contextFileInterceptor
+}
+
+func startControlCenterRollupRefresher(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	intervalSec := 60
+	if raw := os.Getenv("GOCLAW_ROLLUP_REFRESH_SEC"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			intervalSec = n
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+		defer ticker.Stop()
+		refresh := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_agent_trace_rollup"); err != nil {
+				slog.Debug("rollup.refresh.failed", "view", "cc_agent_trace_rollup", "error", err)
+			} else {
+				_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_agent_trace_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+			}
+			if _, err := db.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY cc_team_task_rollup"); err != nil {
+				slog.Debug("rollup.refresh.failed", "view", "cc_team_task_rollup", "error", err)
+			} else {
+				_, _ = db.ExecContext(ctx, "INSERT INTO control_center_rollup_state(name,last_refresh_at) VALUES('cc_team_task_rollup',NOW()) ON CONFLICT(name) DO UPDATE SET last_refresh_at=EXCLUDED.last_refresh_at")
+			}
+		}
+		refresh()
+		for range ticker.C {
+			refresh()
+		}
+	}()
+	slog.Info("control-center rollup refresher started", "interval_sec", intervalSec)
 }
 
 // wireManagedHTTP creates managed-mode HTTP handlers (agents + skills + traces + MCP + custom tools + channel instances + providers + delegations + builtin tools).
