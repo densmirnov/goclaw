@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -27,29 +28,17 @@ func NewProvidersHandler(s store.ProviderStore, token string, providerReg *provi
 // RegisterRoutes registers all provider management routes on the given mux.
 func (h *ProvidersHandler) RegisterRoutes(mux *http.ServeMux) {
 	// Provider CRUD
-	mux.HandleFunc("GET /v1/providers", h.auth(h.handleListProviders))
-	mux.HandleFunc("POST /v1/providers", h.auth(h.handleCreateProvider))
-	mux.HandleFunc("GET /v1/providers/{id}", h.auth(h.handleGetProvider))
-	mux.HandleFunc("PUT /v1/providers/{id}", h.auth(h.handleUpdateProvider))
-	mux.HandleFunc("DELETE /v1/providers/{id}", h.auth(h.handleDeleteProvider))
+	mux.HandleFunc("GET /v1/providers", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListProviders))
+	mux.HandleFunc("GET /v1/providers/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGetProvider))
+	mux.HandleFunc("POST /v1/providers", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleCreateProvider))
+	mux.HandleFunc("PUT /v1/providers/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleUpdateProvider))
+	mux.HandleFunc("DELETE /v1/providers/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleDeleteProvider))
 
 	// Model listing (proxied to upstream provider API)
-	mux.HandleFunc("GET /v1/providers/{id}/models", h.auth(h.handleListProviderModels))
+	mux.HandleFunc("GET /v1/providers/{id}/models", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListProviderModels))
 
 	// Provider + model verification (pre-flight check)
-	mux.HandleFunc("POST /v1/providers/{id}/verify", h.auth(h.handleVerifyProvider))
-}
-
-func (h *ProvidersHandler) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("POST /v1/providers/{id}/verify", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleVerifyProvider))
 }
 
 // maskAPIKey replaces non-empty API keys with "***".

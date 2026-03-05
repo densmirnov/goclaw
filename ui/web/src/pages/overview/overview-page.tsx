@@ -1,4 +1,5 @@
 import { useEffect, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Bot,
@@ -15,6 +16,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/use-auth-store";
+import { useHttp } from "@/hooks/use-ws";
 import { useWsCall } from "@/hooks/use-ws-call";
 import { useWsEvent } from "@/hooks/use-ws-event";
 import { useProviders } from "@/pages/providers/hooks/use-providers";
@@ -159,6 +161,8 @@ function formatUptime(ms: number | undefined): string {
 
 export function OverviewPage() {
   const connected = useAuthStore((s) => s.connected);
+  const role = useAuthStore((s) => s.role);
+  const http = useHttp();
   const { call: fetchHealth, data: health } = useWsCall<HealthPayload>(
     Methods.HEALTH,
   );
@@ -176,6 +180,34 @@ export function OverviewPage() {
   const { providers, loading: providersLoading } = useProviders();
   const { traces } = useTraces({ limit: 8 });
   const { agents: managedAgents } = useAgents();
+  const { data: controlCenter } = useQuery({
+    queryKey: ["admin-control-center"],
+    queryFn: async () =>
+      http.get<{
+        agents: Array<{
+          id: string;
+          agent_key: string;
+          display_name?: string;
+          status: string;
+          owner_id: string;
+          last_action?: string;
+        }>;
+        errors: Array<{
+          id: string;
+          agent_id?: string;
+          name?: string;
+          error?: string;
+          created_at: string;
+        }>;
+        recent_actions: Array<{
+          id: string;
+          name?: string;
+          created_at: string;
+        }>;
+      }>("/v1/admin/control-center"),
+    enabled: connected && role === "admin",
+    retry: false,
+  });
 
   const hasNoProviders = !providersLoading && providers.length === 0;
   const hasNoEnabledProviders =
@@ -216,7 +248,9 @@ export function OverviewPage() {
   const channelsOnline = channelEntries.filter((c) => c.running).length;
   const cronJobs = cronData?.jobs ?? [];
   const enabledProviders = providers.filter((p) => p.enabled).length;
-  const errorTraces = traces.filter((t) => t.status === "error").slice(0, 5);
+  const errorTraces = (
+    controlCenter?.errors ?? traces.filter((t) => t.status === "error")
+  ).slice(0, 5);
   const lastActionByAgent = traces.reduce<Record<string, string>>((acc, t) => {
     if (!t.agent_id || acc[t.agent_id]) return acc;
     acc[t.agent_id] = t.name || t.output_preview || "completed run";
@@ -426,7 +460,7 @@ export function OverviewPage() {
             <CardTitle className="text-base">Agents Control Center</CardTitle>
           </CardHeader>
           <CardContent>
-            {managedAgents.length === 0 ? (
+            {(controlCenter?.agents ?? managedAgents).length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 No managed agents found
               </p>
@@ -442,33 +476,37 @@ export function OverviewPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {managedAgents.slice(0, 12).map((a) => (
-                      <tr key={a.id} className="border-b last:border-0">
-                        <td className="py-2.5 pr-3">
-                          <div className="max-w-[220px] truncate">
-                            {a.display_name || a.agent_key}
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <StatusBadge
-                            status={
-                              a.status === "active" || a.status === "running"
-                                ? "success"
-                                : a.status === "error"
-                                  ? "error"
-                                  : "default"
-                            }
-                            label={a.status || "unknown"}
-                          />
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-xs">
-                          {a.owner_id || "—"}
-                        </td>
-                        <td className="py-2.5 pl-3 max-w-[280px] truncate text-muted-foreground">
-                          {lastActionByAgent[a.id] || "—"}
-                        </td>
-                      </tr>
-                    ))}
+                    {(controlCenter?.agents ?? managedAgents)
+                      .slice(0, 12)
+                      .map((a) => (
+                        <tr key={a.id} className="border-b last:border-0">
+                          <td className="py-2.5 pr-3">
+                            <div className="max-w-[220px] truncate">
+                              {a.display_name || a.agent_key}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <StatusBadge
+                              status={
+                                a.status === "active" || a.status === "running"
+                                  ? "success"
+                                  : a.status === "error"
+                                    ? "error"
+                                    : "default"
+                              }
+                              label={a.status || "unknown"}
+                            />
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-xs">
+                            {a.owner_id || "—"}
+                          </td>
+                          <td className="py-2.5 pl-3 max-w-[280px] truncate text-muted-foreground">
+                            {("last_action" in a ? a.last_action : undefined) ||
+                              lastActionByAgent[a.id] ||
+                              "—"}
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -521,19 +559,21 @@ export function OverviewPage() {
                 Recent Actions
               </h4>
               <div className="space-y-1.5">
-                {traces.slice(0, 6).map((t) => (
-                  <div
-                    key={`action-${t.id}`}
-                    className="flex items-center justify-between text-sm"
-                  >
-                    <span className="truncate pr-3">
-                      {t.name || "agent run"}
-                    </span>
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">
-                      {formatRelativeTime(t.created_at)}
-                    </span>
-                  </div>
-                ))}
+                {(controlCenter?.recent_actions ?? traces)
+                  .slice(0, 6)
+                  .map((t) => (
+                    <div
+                      key={`action-${t.id}`}
+                      className="flex items-center justify-between text-sm"
+                    >
+                      <span className="truncate pr-3">
+                        {t.name || "agent run"}
+                      </span>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {formatRelativeTime(t.created_at)}
+                      </span>
+                    </div>
+                  ))}
               </div>
             </div>
           </CardContent>

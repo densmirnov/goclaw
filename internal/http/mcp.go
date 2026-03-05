@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -24,42 +25,25 @@ func NewMCPHandler(s store.MCPServerStore, token string) *MCPHandler {
 // RegisterRoutes registers all MCP management routes on the given mux.
 func (h *MCPHandler) RegisterRoutes(mux *http.ServeMux) {
 	// Server CRUD
-	mux.HandleFunc("GET /v1/mcp/servers", h.auth(h.handleListServers))
-	mux.HandleFunc("POST /v1/mcp/servers", h.auth(h.handleCreateServer))
-	mux.HandleFunc("GET /v1/mcp/servers/{id}", h.auth(h.handleGetServer))
-	mux.HandleFunc("PUT /v1/mcp/servers/{id}", h.auth(h.handleUpdateServer))
-	mux.HandleFunc("DELETE /v1/mcp/servers/{id}", h.auth(h.handleDeleteServer))
+	mux.HandleFunc("GET /v1/mcp/servers", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListServers))
+	mux.HandleFunc("GET /v1/mcp/servers/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGetServer))
+	mux.HandleFunc("POST /v1/mcp/servers", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleCreateServer))
+	mux.HandleFunc("PUT /v1/mcp/servers/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleUpdateServer))
+	mux.HandleFunc("DELETE /v1/mcp/servers/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleDeleteServer))
 
 	// Agent grants
-	mux.HandleFunc("POST /v1/mcp/servers/{id}/grants/agent", h.auth(h.handleGrantAgent))
-	mux.HandleFunc("DELETE /v1/mcp/servers/{id}/grants/agent/{agentID}", h.auth(h.handleRevokeAgent))
-	mux.HandleFunc("GET /v1/mcp/grants/agent/{agentID}", h.auth(h.handleListAgentGrants))
+	mux.HandleFunc("GET /v1/mcp/grants/agent/{agentID}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListAgentGrants))
+	mux.HandleFunc("POST /v1/mcp/servers/{id}/grants/agent", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleGrantAgent))
+	mux.HandleFunc("DELETE /v1/mcp/servers/{id}/grants/agent/{agentID}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleRevokeAgent))
 
 	// User grants
-	mux.HandleFunc("POST /v1/mcp/servers/{id}/grants/user", h.auth(h.handleGrantUser))
-	mux.HandleFunc("DELETE /v1/mcp/servers/{id}/grants/user/{userID}", h.auth(h.handleRevokeUser))
+	mux.HandleFunc("POST /v1/mcp/servers/{id}/grants/user", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleGrantUser))
+	mux.HandleFunc("DELETE /v1/mcp/servers/{id}/grants/user/{userID}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleRevokeUser))
 
 	// Access requests
-	mux.HandleFunc("POST /v1/mcp/requests", h.auth(h.handleCreateRequest))
-	mux.HandleFunc("GET /v1/mcp/requests", h.auth(h.handleListPendingRequests))
-	mux.HandleFunc("POST /v1/mcp/requests/{id}/review", h.auth(h.handleReviewRequest))
-}
-
-func (h *MCPHandler) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		userID := extractUserID(r)
-		if userID != "" {
-			ctx := store.WithUserID(r.Context(), userID)
-			r = r.WithContext(ctx)
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("POST /v1/mcp/requests", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleCreateRequest))
+	mux.HandleFunc("GET /v1/mcp/requests", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListPendingRequests))
+	mux.HandleFunc("POST /v1/mcp/requests/{id}/review", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleReviewRequest))
 }
 
 // --- Server CRUD ---
@@ -175,7 +159,7 @@ func (h *MCPHandler) handleGrantAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID   string `json:"agent_id"`
+		AgentID   string          `json:"agent_id"`
 		ToolAllow json.RawMessage `json:"tool_allow,omitempty"`
 		ToolDeny  json.RawMessage `json:"tool_deny,omitempty"`
 	}
@@ -257,7 +241,7 @@ func (h *MCPHandler) handleGrantUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		UserID    string `json:"user_id"`
+		UserID    string          `json:"user_id"`
 		ToolAllow json.RawMessage `json:"tool_allow,omitempty"`
 		ToolDeny  json.RawMessage `json:"tool_deny,omitempty"`
 	}

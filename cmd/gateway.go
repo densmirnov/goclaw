@@ -649,7 +649,7 @@ func runGateway() {
 		}
 
 		contextFileInterceptor = wireManagedExtras(managedStores, agentRouter, providerRegistry, msgBus, sessStore, toolsReg, toolPE, skillsLoader, hasMemory, traceCollector, workspace, cfg.Gateway.InjectionAction, cfg, sandboxMgr, dynamicLoader)
-		agentsH, skillsH, tracesH, mcpH, customToolsH, channelInstancesH, providersH, delegationsH, builtinToolsH := wireManagedHTTP(managedStores, cfg.Gateway.Token, msgBus, toolsReg, providerRegistry, permPE.IsOwner)
+		agentsH, skillsH, tracesH, mcpH, customToolsH, channelInstancesH, providersH, delegationsH, builtinToolsH, controlCenterH := wireManagedHTTP(managedStores, cfg.Gateway.Token, msgBus, toolsReg, providerRegistry, permPE.IsOwner)
 		if agentsH != nil {
 			server.SetAgentsHandler(agentsH)
 		}
@@ -676,6 +676,9 @@ func runGateway() {
 		}
 		if builtinToolsH != nil {
 			server.SetBuiltinToolsHandler(builtinToolsH)
+		}
+		if controlCenterH != nil {
+			server.SetControlCenterHandler(controlCenterH)
 		}
 
 		// Seed + apply builtin tool disables

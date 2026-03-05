@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -22,20 +23,8 @@ func NewTracesHandler(tracing store.TracingStore, token string) *TracesHandler {
 
 // RegisterRoutes registers trace routes on the given mux.
 func (h *TracesHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/traces", h.authMiddleware(h.handleList))
-	mux.HandleFunc("GET /v1/traces/{traceID}", h.authMiddleware(h.handleGet))
-}
-
-func (h *TracesHandler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("GET /v1/traces", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleList))
+	mux.HandleFunc("GET /v1/traces/{traceID}", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleGet))
 }
 
 func (h *TracesHandler) handleList(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
@@ -25,21 +26,9 @@ func NewBuiltinToolsHandler(s store.BuiltinToolStore, token string, msgBus *bus.
 
 // RegisterRoutes registers all built-in tool routes on the given mux.
 func (h *BuiltinToolsHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/tools/builtin", h.auth(h.handleList))
-	mux.HandleFunc("GET /v1/tools/builtin/{name}", h.auth(h.handleGet))
-	mux.HandleFunc("PUT /v1/tools/builtin/{name}", h.auth(h.handleUpdate))
-}
-
-func (h *BuiltinToolsHandler) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("GET /v1/tools/builtin", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleList))
+	mux.HandleFunc("GET /v1/tools/builtin/{name}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGet))
+	mux.HandleFunc("PUT /v1/tools/builtin/{name}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleUpdate))
 }
 
 func (h *BuiltinToolsHandler) emitCacheInvalidate(key string) {

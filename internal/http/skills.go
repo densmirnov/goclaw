@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/store/pg"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -27,7 +28,7 @@ var slugRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 
 // SkillsHandler handles skill management HTTP endpoints (managed mode).
 type SkillsHandler struct {
-	skills *pg.PGSkillStore
+	skills  *pg.PGSkillStore
 	baseDir string // filesystem base for skill content
 	token   string
 	msgBus  *bus.MessageBus
@@ -51,33 +52,17 @@ func (h *SkillsHandler) emitCacheInvalidate(kind, key string) {
 
 // RegisterRoutes registers all skill management routes on the given mux.
 func (h *SkillsHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/skills", h.authMiddleware(h.handleList))
-	mux.HandleFunc("POST /v1/skills/upload", h.authMiddleware(h.handleUpload))
-	mux.HandleFunc("GET /v1/skills/{id}", h.authMiddleware(h.handleGet))
-	mux.HandleFunc("PUT /v1/skills/{id}", h.authMiddleware(h.handleUpdate))
-	mux.HandleFunc("DELETE /v1/skills/{id}", h.authMiddleware(h.handleDelete))
-	mux.HandleFunc("POST /v1/skills/{id}/grants/agent", h.authMiddleware(h.handleGrantAgent))
-	mux.HandleFunc("DELETE /v1/skills/{id}/grants/agent/{agentID}", h.authMiddleware(h.handleRevokeAgent))
-	mux.HandleFunc("POST /v1/skills/{id}/grants/user", h.authMiddleware(h.handleGrantUser))
-	mux.HandleFunc("DELETE /v1/skills/{id}/grants/user/{userID}", h.authMiddleware(h.handleRevokeUser))
-	mux.HandleFunc("GET /v1/agents/{agentID}/skills", h.authMiddleware(h.handleListAgentSkills))
-}
+	mux.HandleFunc("GET /v1/skills", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleList))
+	mux.HandleFunc("GET /v1/skills/{id}", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleGet))
+	mux.HandleFunc("GET /v1/agents/{agentID}/skills", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleListAgentSkills))
 
-func (h *SkillsHandler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		userID := extractUserID(r)
-		if userID != "" {
-			ctx := store.WithUserID(r.Context(), userID)
-			r = r.WithContext(ctx)
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("POST /v1/skills/upload", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleUpload))
+	mux.HandleFunc("PUT /v1/skills/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleUpdate))
+	mux.HandleFunc("DELETE /v1/skills/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleDelete))
+	mux.HandleFunc("POST /v1/skills/{id}/grants/agent", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGrantAgent))
+	mux.HandleFunc("DELETE /v1/skills/{id}/grants/agent/{agentID}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleRevokeAgent))
+	mux.HandleFunc("POST /v1/skills/{id}/grants/user", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGrantUser))
+	mux.HandleFunc("DELETE /v1/skills/{id}/grants/user/{userID}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleRevokeUser))
 }
 
 func (h *SkillsHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -296,4 +281,3 @@ func (h *SkillsHandler) handleListAgentSkills(w http.ResponseWriter, r *http.Req
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"skills": skills})
 }
-

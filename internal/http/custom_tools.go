@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
@@ -29,28 +30,11 @@ func NewCustomToolsHandler(s store.CustomToolStore, token string, msgBus *bus.Me
 
 // RegisterRoutes registers all custom tool routes on the given mux.
 func (h *CustomToolsHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/tools/custom", h.auth(h.handleList))
-	mux.HandleFunc("POST /v1/tools/custom", h.auth(h.handleCreate))
-	mux.HandleFunc("GET /v1/tools/custom/{id}", h.auth(h.handleGet))
-	mux.HandleFunc("PUT /v1/tools/custom/{id}", h.auth(h.handleUpdate))
-	mux.HandleFunc("DELETE /v1/tools/custom/{id}", h.auth(h.handleDelete))
-}
-
-func (h *CustomToolsHandler) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		userID := extractUserID(r)
-		if userID != "" {
-			ctx := store.WithUserID(r.Context(), userID)
-			r = r.WithContext(ctx)
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("GET /v1/tools/custom", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleList))
+	mux.HandleFunc("GET /v1/tools/custom/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGet))
+	mux.HandleFunc("POST /v1/tools/custom", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleCreate))
+	mux.HandleFunc("PUT /v1/tools/custom/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleUpdate))
+	mux.HandleFunc("DELETE /v1/tools/custom/{id}", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleDelete))
 }
 
 func (h *CustomToolsHandler) emitCacheInvalidate(key string) {

@@ -31,18 +31,19 @@ type Server struct {
 	tools    *tools.Registry
 	router   *MethodRouter
 
-	policyEngine   *permissions.PolicyEngine
-	pairingService store.PairingStore
-	agentsHandler  *httpapi.AgentsHandler // managed mode: agent CRUD API
-	skillsHandler  *httpapi.SkillsHandler // managed mode: skill management API
-	tracesHandler  *httpapi.TracesHandler // managed mode: LLM trace listing API
-	mcpHandler         *httpapi.MCPHandler         // managed mode: MCP server management API
+	policyEngine            *permissions.PolicyEngine
+	pairingService          store.PairingStore
+	agentsHandler           *httpapi.AgentsHandler           // managed mode: agent CRUD API
+	skillsHandler           *httpapi.SkillsHandler           // managed mode: skill management API
+	tracesHandler           *httpapi.TracesHandler           // managed mode: LLM trace listing API
+	mcpHandler              *httpapi.MCPHandler              // managed mode: MCP server management API
 	customToolsHandler      *httpapi.CustomToolsHandler      // managed mode: custom tool CRUD API
 	channelInstancesHandler *httpapi.ChannelInstancesHandler // managed mode: channel instance CRUD API
 	providersHandler        *httpapi.ProvidersHandler        // managed mode: provider CRUD API
 	delegationsHandler      *httpapi.DelegationsHandler      // managed mode: delegation history API
 	builtinToolsHandler     *httpapi.BuiltinToolsHandler     // managed mode: builtin tool management API
-	agentStore         store.AgentStore             // managed mode: for context injection in tools_invoke
+	controlCenterHandler    *httpapi.ControlCenterHandler    // managed mode: aggregated admin control center API
+	agentStore              store.AgentStore                 // managed mode: for context injection in tools_invoke
 
 	upgrader    websocket.Upgrader
 	rateLimiter *RateLimiter
@@ -184,6 +185,9 @@ func (s *Server) BuildMux() *http.ServeMux {
 	if s.builtinToolsHandler != nil {
 		s.builtinToolsHandler.RegisterRoutes(mux)
 	}
+	if s.controlCenterHandler != nil {
+		s.controlCenterHandler.RegisterRoutes(mux)
+	}
 
 	s.mux = mux
 	return mux
@@ -278,6 +282,9 @@ func (s *Server) SetDelegationsHandler(h *httpapi.DelegationsHandler) { s.delega
 // SetBuiltinToolsHandler sets the managed-mode builtin tool management handler.
 func (s *Server) SetBuiltinToolsHandler(h *httpapi.BuiltinToolsHandler) {
 	s.builtinToolsHandler = h
+}
+func (s *Server) SetControlCenterHandler(h *httpapi.ControlCenterHandler) {
+	s.controlCenterHandler = h
 }
 
 // SetAgentStore sets the agent store for context injection in tools_invoke.

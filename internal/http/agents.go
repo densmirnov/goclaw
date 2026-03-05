@@ -10,6 +10,7 @@ import (
 
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
@@ -18,8 +19,8 @@ import (
 type AgentsHandler struct {
 	agents   store.AgentStore
 	token    string
-	msgBus   *bus.MessageBus  // for cache invalidation events (nil = no events)
-	summoner *AgentSummoner   // LLM-based agent setup (nil = disabled)
+	msgBus   *bus.MessageBus   // for cache invalidation events (nil = no events)
+	summoner *AgentSummoner    // LLM-based agent setup (nil = disabled)
 	isOwner  func(string) bool // checks if user ID is a system owner (nil = no owners configured)
 }
 
@@ -47,34 +48,17 @@ func (h *AgentsHandler) emitCacheInvalidate(kind, key string) {
 
 // RegisterRoutes registers all agent management routes on the given mux.
 func (h *AgentsHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/agents", h.authMiddleware(h.handleList))
-	mux.HandleFunc("POST /v1/agents", h.authMiddleware(h.handleCreate))
-	mux.HandleFunc("GET /v1/agents/{id}", h.authMiddleware(h.handleGet))
-	mux.HandleFunc("PUT /v1/agents/{id}", h.authMiddleware(h.handleUpdate))
-	mux.HandleFunc("DELETE /v1/agents/{id}", h.authMiddleware(h.handleDelete))
-	mux.HandleFunc("GET /v1/agents/{id}/shares", h.authMiddleware(h.handleListShares))
-	mux.HandleFunc("POST /v1/agents/{id}/shares", h.authMiddleware(h.handleShare))
-	mux.HandleFunc("DELETE /v1/agents/{id}/shares/{userID}", h.authMiddleware(h.handleRevokeShare))
-	mux.HandleFunc("POST /v1/agents/{id}/regenerate", h.authMiddleware(h.handleRegenerate))
-	mux.HandleFunc("POST /v1/agents/{id}/resummon", h.authMiddleware(h.handleResummon))
-}
+	mux.HandleFunc("GET /v1/agents", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleList))
+	mux.HandleFunc("GET /v1/agents/{id}", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleGet))
+	mux.HandleFunc("GET /v1/agents/{id}/shares", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleListShares))
 
-func (h *AgentsHandler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		// Inject user_id into context
-		userID := extractUserID(r)
-		if userID != "" {
-			ctx := store.WithUserID(r.Context(), userID)
-			r = r.WithContext(ctx)
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("POST /v1/agents", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleCreate))
+	mux.HandleFunc("PUT /v1/agents/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleUpdate))
+	mux.HandleFunc("DELETE /v1/agents/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleDelete))
+	mux.HandleFunc("POST /v1/agents/{id}/shares", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleShare))
+	mux.HandleFunc("DELETE /v1/agents/{id}/shares/{userID}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleRevokeShare))
+	mux.HandleFunc("POST /v1/agents/{id}/regenerate", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleRegenerate))
+	mux.HandleFunc("POST /v1/agents/{id}/resummon", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleResummon))
 }
 
 func (h *AgentsHandler) handleList(w http.ResponseWriter, r *http.Request) {

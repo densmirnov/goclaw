@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/pkg/protocol"
 )
@@ -28,35 +29,18 @@ func NewChannelInstancesHandler(s store.ChannelInstanceStore, agentStore store.A
 
 // RegisterRoutes registers all channel instance routes on the given mux.
 func (h *ChannelInstancesHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/channels/instances", h.auth(h.handleList))
-	mux.HandleFunc("POST /v1/channels/instances", h.auth(h.handleCreate))
-	mux.HandleFunc("GET /v1/channels/instances/{id}", h.auth(h.handleGet))
-	mux.HandleFunc("PUT /v1/channels/instances/{id}", h.auth(h.handleUpdate))
-	mux.HandleFunc("DELETE /v1/channels/instances/{id}", h.auth(h.handleDelete))
+	mux.HandleFunc("GET /v1/channels/instances", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleList))
+	mux.HandleFunc("GET /v1/channels/instances/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleGet))
+	mux.HandleFunc("POST /v1/channels/instances", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleCreate))
+	mux.HandleFunc("PUT /v1/channels/instances/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleUpdate))
+	mux.HandleFunc("DELETE /v1/channels/instances/{id}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleDelete))
 
 	// Group file writers (nested under channel instances)
 	if h.agentStore != nil {
-		mux.HandleFunc("GET /v1/channels/instances/{id}/writers/groups", h.auth(h.handleWriterGroups))
-		mux.HandleFunc("GET /v1/channels/instances/{id}/writers", h.auth(h.handleListWriters))
-		mux.HandleFunc("POST /v1/channels/instances/{id}/writers", h.auth(h.handleAddWriter))
-		mux.HandleFunc("DELETE /v1/channels/instances/{id}/writers/{userId}", h.auth(h.handleRemoveWriter))
-	}
-}
-
-func (h *ChannelInstancesHandler) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		userID := extractUserID(r)
-		if userID != "" {
-			ctx := store.WithUserID(r.Context(), userID)
-			r = r.WithContext(ctx)
-		}
-		next(w, r)
+		mux.HandleFunc("GET /v1/channels/instances/{id}/writers/groups", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleWriterGroups))
+		mux.HandleFunc("GET /v1/channels/instances/{id}/writers", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleListWriters))
+		mux.HandleFunc("POST /v1/channels/instances/{id}/writers", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleAddWriter))
+		mux.HandleFunc("DELETE /v1/channels/instances/{id}/writers/{userId}", requireRoleHTTP(h.token, permissions.RoleOperator, h.handleRemoveWriter))
 	}
 }
 
@@ -241,18 +225,18 @@ func (h *ChannelInstancesHandler) handleDelete(w http.ResponseWriter, r *http.Re
 // maskInstanceHTTP returns a map with credentials masked for HTTP responses.
 func maskInstanceHTTP(inst store.ChannelInstanceData) map[string]interface{} {
 	result := map[string]interface{}{
-		"id":           inst.ID,
-		"name":         inst.Name,
-		"display_name": inst.DisplayName,
-		"channel_type": inst.ChannelType,
-		"agent_id":     inst.AgentID,
-		"config":       inst.Config,
-		"enabled":      inst.Enabled,
-		"is_default":       store.IsDefaultChannelInstance(inst.Name),
-		"has_credentials":  len(inst.Credentials) > 0,
-		"created_by":       inst.CreatedBy,
-		"created_at":       inst.CreatedAt,
-		"updated_at":       inst.UpdatedAt,
+		"id":              inst.ID,
+		"name":            inst.Name,
+		"display_name":    inst.DisplayName,
+		"channel_type":    inst.ChannelType,
+		"agent_id":        inst.AgentID,
+		"config":          inst.Config,
+		"enabled":         inst.Enabled,
+		"is_default":      store.IsDefaultChannelInstance(inst.Name),
+		"has_credentials": len(inst.Credentials) > 0,
+		"created_by":      inst.CreatedBy,
+		"created_at":      inst.CreatedAt,
+		"updated_at":      inst.UpdatedAt,
 	}
 
 	if len(inst.Credentials) > 0 {

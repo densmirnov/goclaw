@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
@@ -20,20 +21,8 @@ func NewDelegationsHandler(teamStore store.TeamStore, token string) *Delegations
 }
 
 func (h *DelegationsHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/delegations", h.authMiddleware(h.handleList))
-	mux.HandleFunc("GET /v1/delegations/{id}", h.authMiddleware(h.handleGet))
-}
-
-func (h *DelegationsHandler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.token != "" {
-			if extractBearerToken(r) != h.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
-		}
-		next(w, r)
-	}
+	mux.HandleFunc("GET /v1/delegations", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleList))
+	mux.HandleFunc("GET /v1/delegations/{id}", requireRoleHTTP(h.token, permissions.RoleViewer, h.handleGet))
 }
 
 func (h *DelegationsHandler) handleList(w http.ResponseWriter, r *http.Request) {
