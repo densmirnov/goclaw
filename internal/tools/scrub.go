@@ -45,6 +45,17 @@ var (
 	dynamicScrubValues []string
 )
 
+var scrubHintSubstrings = []string{
+	"sk-", "sk-ant-",
+	"ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+	"akia",
+	"api_key", "apikey", "token", "secret", "password", "bearer", "authorization",
+	"postgres://", "postgresql://", "mysql://", "mongodb://", "redis://", "amqp://",
+	"key=", "secret=", "credential", "private",
+	"dsn", "database_url", "redis_url", "mongo_uri",
+	"virtual_",
+}
+
 // AddDynamicScrubValues adds exact string values to the dynamic scrub list.
 // Thread-safe. Deduplicates. Empty strings are ignored.
 func AddDynamicScrubValues(values ...string) {
@@ -79,18 +90,83 @@ func ResetDynamicScrubValues() {
 
 // ScrubCredentials replaces known credential patterns and dynamic values in text.
 func ScrubCredentials(text string) string {
-	for _, pat := range credentialPatterns {
-		text = pat.ReplaceAllString(text, redactedPlaceholder)
+	if text == "" {
+		return text
+	}
+
+	if shouldRunPatternScrub(text) {
+		for _, pat := range credentialPatterns {
+			text = pat.ReplaceAllString(text, redactedPlaceholder)
+		}
 	}
 
 	// Dynamic values (server IPs, etc.)
 	dynamicScrubMu.RLock()
-	vals := dynamicScrubValues
+	vals := append([]string(nil), dynamicScrubValues...)
 	dynamicScrubMu.RUnlock()
 
 	for _, v := range vals {
-		text = strings.ReplaceAll(text, v, serverIPPlaceholder)
+		if v != "" && strings.Contains(text, v) {
+			text = strings.ReplaceAll(text, v, serverIPPlaceholder)
+		}
 	}
 
 	return text
+}
+
+func shouldRunPatternScrub(text string) bool {
+	for _, hint := range scrubHintSubstrings {
+		if containsASCIIFold(text, hint) {
+			return true
+		}
+	}
+	return hasLongHexRun(text, 64)
+}
+
+func containsASCIIFold(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	if len(sub) > len(s) {
+		return false
+	}
+	last := len(s) - len(sub)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(sub); j++ {
+			if toLowerASCII(s[i+j]) != toLowerASCII(sub[j]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func toLowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
+}
+
+func hasLongHexRun(s string, minRun int) bool {
+	run := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= '0' && c <= '9') ||
+			(c >= 'a' && c <= 'f') ||
+			(c >= 'A' && c <= 'F') {
+			run++
+			if run >= minRun {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
 }

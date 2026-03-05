@@ -30,6 +30,18 @@ type webCache struct {
 	ttl     time.Duration
 }
 
+type ssrfDecisionCache struct {
+	mu      sync.Mutex
+	entries map[string]*ssrfDecision
+	ttl     time.Duration
+}
+
+type ssrfDecision struct {
+	allow     bool
+	errText   string
+	expiresAt time.Time
+}
+
 func newWebCache(maxSize int, ttl time.Duration) *webCache {
 	if maxSize <= 0 {
 		maxSize = defaultCacheMaxEntries
@@ -42,6 +54,46 @@ func newWebCache(maxSize int, ttl time.Duration) *webCache {
 		maxSize: maxSize,
 		ttl:     ttl,
 	}
+}
+
+func newSSRFDecisionCache(ttl time.Duration) *ssrfDecisionCache {
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	return &ssrfDecisionCache{
+		entries: make(map[string]*ssrfDecision),
+		ttl:     ttl,
+	}
+}
+
+func (c *ssrfDecisionCache) get(key string) (bool, error, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return false, nil, false
+	}
+	if time.Now().After(e.expiresAt) {
+		delete(c.entries, key)
+		return false, nil, false
+	}
+	if e.allow {
+		return true, nil, true
+	}
+	return false, fmt.Errorf("%s", e.errText), true
+}
+
+func (c *ssrfDecisionCache) set(key string, allow bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d := &ssrfDecision{
+		allow:     allow,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+	if err != nil {
+		d.errText = err.Error()
+	}
+	c.entries[key] = d
 }
 
 func (c *webCache) get(key string) (string, bool) {
@@ -100,6 +152,8 @@ var blockedHostnames = map[string]bool{
 	"metadata.google.internal": true,
 }
 
+var ssrfCache = newSSRFDecisionCache(2 * time.Minute)
+
 func isBlockedHostname(hostname string) bool {
 	hostname = strings.ToLower(hostname)
 	if blockedHostnames[hostname] {
@@ -125,13 +179,13 @@ func isPrivateIP(ipStr string) bool {
 		network string
 		mask    int
 	}{
-		{"0.0.0.0", 8},       // current network
-		{"10.0.0.0", 8},      // private
-		{"127.0.0.0", 8},     // loopback
-		{"169.254.0.0", 16},  // link-local
-		{"172.16.0.0", 12},   // private
-		{"192.168.0.0", 16},  // private
-		{"100.64.0.0", 10},   // carrier-grade NAT
+		{"0.0.0.0", 8},      // current network
+		{"10.0.0.0", 8},     // private
+		{"127.0.0.0", 8},    // loopback
+		{"169.254.0.0", 16}, // link-local
+		{"172.16.0.0", 12},  // private
+		{"192.168.0.0", 16}, // private
+		{"100.64.0.0", 10},  // carrier-grade NAT
 	}
 
 	for _, r := range privateRanges {
@@ -143,11 +197,11 @@ func isPrivateIP(ipStr string) bool {
 
 	// IPv6 private ranges
 	ipv6Ranges := []string{
-		"::0/128",    // unspecified
-		"::1/128",    // loopback
-		"fe80::/10",  // link-local
-		"fec0::/10",  // site-local (deprecated)
-		"fc00::/7",   // unique local
+		"::0/128",   // unspecified
+		"::1/128",   // loopback
+		"fe80::/10", // link-local
+		"fec0::/10", // site-local (deprecated)
+		"fc00::/7",  // unique local
 	}
 	for _, cidrStr := range ipv6Ranges {
 		_, cidr, _ := net.ParseCIDR(cidrStr)
@@ -171,6 +225,7 @@ func CheckSSRF(rawURL string) error {
 	if hostname == "" {
 		return fmt.Errorf("missing hostname")
 	}
+	cacheKey := strings.ToLower(strings.TrimSpace(hostname))
 
 	if isBlockedHostname(hostname) {
 		return fmt.Errorf("blocked hostname: %s", hostname)
@@ -184,18 +239,30 @@ func CheckSSRF(rawURL string) error {
 		return nil
 	}
 
+	if allow, cachedErr, ok := ssrfCache.get(cacheKey); ok {
+		if allow {
+			return nil
+		}
+		return cachedErr
+	}
+
 	// DNS resolution check (pinning)
 	addrs, err := net.LookupHost(hostname)
 	if err != nil {
-		return fmt.Errorf("DNS resolution failed for %s: %w", hostname, err)
+		resErr := fmt.Errorf("DNS resolution failed for %s: %w", hostname, err)
+		ssrfCache.set(cacheKey, false, resErr)
+		return resErr
 	}
 
 	for _, addr := range addrs {
 		if isPrivateIP(addr) {
-			return fmt.Errorf("hostname %s resolves to private IP %s", hostname, addr)
+			resErr := fmt.Errorf("hostname %s resolves to private IP %s", hostname, addr)
+			ssrfCache.set(cacheKey, false, resErr)
+			return resErr
 		}
 	}
 
+	ssrfCache.set(cacheKey, true, nil)
 	return nil
 }
 

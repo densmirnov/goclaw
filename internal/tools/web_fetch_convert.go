@@ -531,6 +531,10 @@ func collectTableRows(table *html.Node, mode convertMode) [][]string {
 // --- output cleanup ---
 
 var reMultiNL = regexp.MustCompile(`\n{3,}`)
+var reMdHeadersToText = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+var reMdInlineCodeToText = regexp.MustCompile("`[^`]+`")
+var reMdLinksToText = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+var reMdImagesToText = regexp.MustCompile(`!\[([^\]]*)\]\([^)]+\)`)
 
 func cleanOutput(s string) string {
 	s = reMultiNL.ReplaceAllString(s, "\n\n")
@@ -559,14 +563,14 @@ func stripTagsFallback(s string) string {
 // markdownToText strips markdown formatting for text mode.
 func markdownToText(md string) string {
 	s := md
-	s = regexp.MustCompile(`(?m)^#{1,6}\s+`).ReplaceAllString(s, "")
+	s = reMdHeadersToText.ReplaceAllString(s, "")
 	s = strings.ReplaceAll(s, "**", "")
 	s = strings.ReplaceAll(s, "__", "")
-	s = regexp.MustCompile("`[^`]+`").ReplaceAllStringFunc(s, func(m string) string {
+	s = reMdInlineCodeToText.ReplaceAllStringFunc(s, func(m string) string {
 		return strings.Trim(m, "`")
 	})
-	s = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`).ReplaceAllString(s, "$1")
-	s = regexp.MustCompile(`!\[([^\]]*)\]\([^)]+\)`).ReplaceAllString(s, "$1")
+	s = reMdLinksToText.ReplaceAllString(s, "$1")
+	s = reMdImagesToText.ReplaceAllString(s, "$1")
 	s = reMultiNL.ReplaceAllString(s, "\n\n")
 	return strings.TrimSpace(s)
 }

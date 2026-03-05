@@ -35,6 +35,32 @@ type toolsInvokeRequest struct {
 	DryRun     bool                   `json:"dryRun,omitempty"`
 }
 
+type toolsInvokeErrorResponse struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type toolsInvokeDryRunResponse struct {
+	Tool        string                 `json:"tool"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"`
+	DryRun      bool                   `json:"dryRun"`
+}
+
+type toolsInvokeResultPayload struct {
+	Output   string      `json:"output"`
+	ForUser  string      `json:"forUser,omitempty"`
+	Metadata interface{} `json:"metadata"`
+}
+
+type toolsInvokeResultResponse struct {
+	Result toolsInvokeResultPayload `json:"result"`
+}
+
+var emptyObject = struct{}{}
+
 func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -43,19 +69,23 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.token != "" {
 		if extractBearerToken(r) != h.token {
-			http.Error(w, `{"error":{"code":"UNAUTHORIZED","message":"Invalid token"}}`, http.StatusUnauthorized)
+			writeToolError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
 			return
 		}
 	}
 
+	// Prevent oversized payload allocations from untrusted callers.
+	const maxRequestBodySize = 1 << 20 // 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
 	var req toolsInvokeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":{"code":"BAD_REQUEST","message":"%s"}}`, err), http.StatusBadRequest)
+		writeToolError(w, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
 
 	if req.Tool == "" {
-		http.Error(w, `{"error":{"code":"BAD_REQUEST","message":"tool is required"}}`, http.StatusBadRequest)
+		writeToolError(w, http.StatusBadRequest, "BAD_REQUEST", "tool is required")
 		return
 	}
 
@@ -70,11 +100,11 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"tool":        req.Tool,
-			"description": tool.Description(),
-			"parameters":  tool.Parameters(),
-			"dryRun":      true,
+		_ = json.NewEncoder(w).Encode(toolsInvokeDryRunResponse{
+			Tool:        req.Tool,
+			Description: tool.Description(),
+			Parameters:  tool.Parameters(),
+			DryRun:      true,
 		})
 		return
 	}
@@ -116,11 +146,11 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"result": map[string]interface{}{
-			"output":   result.ForLLM,
-			"forUser":  result.ForUser,
-			"metadata": map[string]interface{}{},
+	_ = json.NewEncoder(w).Encode(toolsInvokeResultResponse{
+		Result: toolsInvokeResultPayload{
+			Output:   result.ForLLM,
+			ForUser:  result.ForUser,
+			Metadata: emptyObject,
 		},
 	})
 }
@@ -128,10 +158,8 @@ func (h *ToolsInvokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func writeToolError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": map[string]string{
-			"code":    code,
-			"message": message,
-		},
-	})
+	var resp toolsInvokeErrorResponse
+	resp.Error.Code = code
+	resp.Error.Message = message
+	_ = json.NewEncoder(w).Encode(resp)
 }

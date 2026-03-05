@@ -14,7 +14,9 @@ import (
 // SQLiteStore implements chunk storage with FTS5 full-text search.
 type SQLiteStore struct {
 	db *sql.DB
-	mu sync.RWMutex
+	// Serialize write paths only. Read paths use sql.DB directly since it is
+	// concurrency-safe and holding a lock during Query/Scan increases contention.
+	mu sync.Mutex
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at the given path
@@ -148,9 +150,6 @@ func (s *SQLiteStore) DeleteByPath(path string) error {
 // SearchFTS performs a full-text search using FTS5 with BM25 ranking.
 // Returns results sorted by relevance score (highest first).
 func (s *SQLiteStore) SearchFTS(query string, opts SearchOptions) ([]SearchResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
 		maxResults = 10
@@ -211,9 +210,6 @@ func (s *SQLiteStore) SearchFTS(query string, opts SearchOptions) ([]SearchResul
 
 // GetAllChunks returns all chunks (for in-memory vector search).
 func (s *SQLiteStore) GetAllChunks() ([]Chunk, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	rows, err := s.db.Query("SELECT id, path, source, start_line, end_line, hash, model, text, embedding FROM chunks")
 	if err != nil {
 		return nil, err
@@ -236,9 +232,6 @@ func (s *SQLiteStore) GetAllChunks() ([]Chunk, error) {
 
 // GetChunksByPath returns all chunks for a specific file path.
 func (s *SQLiteStore) GetChunksByPath(path string) ([]Chunk, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	rows, err := s.db.Query("SELECT id, path, source, start_line, end_line, hash, model, text FROM chunks WHERE path = ? ORDER BY start_line", path)
 	if err != nil {
 		return nil, err
@@ -259,9 +252,6 @@ func (s *SQLiteStore) GetChunksByPath(path string) ([]Chunk, error) {
 
 // GetCachedEmbedding returns a cached embedding by content hash.
 func (s *SQLiteStore) GetCachedEmbedding(contentHash, provider, model string) ([]float32, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var embJSON string
 	err := s.db.QueryRow("SELECT embedding FROM embedding_cache WHERE hash = ? AND provider = ? AND model = ?",
 		contentHash, provider, model).Scan(&embJSON)
@@ -291,9 +281,6 @@ func (s *SQLiteStore) CacheEmbedding(contentHash, provider, model string, embedd
 
 // GetFileHash returns the stored hash for a file path, or false if not found.
 func (s *SQLiteStore) GetFileHash(path string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var hash string
 	err := s.db.QueryRow("SELECT hash FROM files WHERE path = ?", path).Scan(&hash)
 	if err != nil {
@@ -323,9 +310,6 @@ func (s *SQLiteStore) DeleteFile(path string) error {
 
 // ChunkCount returns the number of stored chunks.
 func (s *SQLiteStore) ChunkCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var count int
 	s.db.QueryRow("SELECT COUNT(*) FROM chunks").Scan(&count)
 	return count

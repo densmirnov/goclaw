@@ -82,8 +82,8 @@ func (t *CronTool) Parameters() map[string]interface{} {
 				"description": "Include disabled jobs in list (default false)",
 			},
 			"job": map[string]interface{}{
-				"type":        "object",
-				"description": "Job definition for add action (name, schedule, message, deliver, channel, to, agentId, deleteAfterRun)",
+				"type":                 "object",
+				"description":          "Job definition for add action (name, schedule, message, deliver, channel, to, agentId, deleteAfterRun)",
 				"additionalProperties": true,
 			},
 			"jobId": map[string]interface{}{
@@ -95,8 +95,8 @@ func (t *CronTool) Parameters() map[string]interface{} {
 				"description": "Backward compatibility alias for jobId",
 			},
 			"patch": map[string]interface{}{
-				"type":        "object",
-				"description": "Patch object for update action",
+				"type":                 "object",
+				"description":          "Patch object for update action",
 				"additionalProperties": true,
 			},
 			"runMode": map[string]interface{}{
@@ -290,18 +290,164 @@ func (t *CronTool) handleUpdate(args map[string]interface{}, agentID, userID str
 		return ErrorResult("patch object is required for update action")
 	}
 
-	var patch store.CronJobPatch
-	// Re-marshal and unmarshal to leverage JSON tags
-	patchJSON, _ := json.Marshal(patchObj)
-	json.Unmarshal(patchJSON, &patch)
+	patch, err := decodeCronJobPatch(patchObj)
+	if err != nil {
+		return ErrorResult("invalid patch: " + err.Error())
+	}
 
-	job, err := t.cronStore.UpdateJob(jobID, patch)
+	job, err := t.cronStore.UpdateJob(jobID, *patch)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to update cron job: %v", err))
 	}
 
 	data, _ := json.MarshalIndent(map[string]interface{}{"job": job}, "", "  ")
 	return NewResult(string(data))
+}
+
+func decodeCronJobPatch(patchObj map[string]interface{}) (*store.CronJobPatch, error) {
+	patch := &store.CronJobPatch{}
+
+	if v, ok := patchObj["name"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("patch.name must be a string")
+		}
+		patch.Name = s
+	}
+	if v, ok := patchObj["agentId"]; ok {
+		if v == nil {
+			patch.AgentID = nil
+		} else {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("patch.agentId must be a string")
+			}
+			patch.AgentID = &s
+		}
+	}
+	if v, ok := patchObj["enabled"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("patch.enabled must be a boolean")
+		}
+		patch.Enabled = &b
+	}
+	if v, ok := patchObj["schedule"]; ok {
+		scheduleObj, ok := v.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("patch.schedule must be an object")
+		}
+		schedule, err := decodeCronSchedule(scheduleObj)
+		if err != nil {
+			return nil, err
+		}
+		patch.Schedule = schedule
+	}
+	if v, ok := patchObj["message"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("patch.message must be a string")
+		}
+		patch.Message = s
+	}
+	if v, ok := patchObj["deliver"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("patch.deliver must be a boolean")
+		}
+		patch.Deliver = &b
+	}
+	if v, ok := patchObj["channel"]; ok {
+		if v == nil {
+			patch.Channel = nil
+		} else {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("patch.channel must be a string")
+			}
+			patch.Channel = &s
+		}
+	}
+	if v, ok := patchObj["to"]; ok {
+		if v == nil {
+			patch.To = nil
+		} else {
+			s, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("patch.to must be a string")
+			}
+			patch.To = &s
+		}
+	}
+	if v, ok := patchObj["deleteAfterRun"]; ok {
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("patch.deleteAfterRun must be a boolean")
+		}
+		patch.DeleteAfterRun = &b
+	}
+
+	return patch, nil
+}
+
+func decodeCronSchedule(scheduleObj map[string]interface{}) (*store.CronSchedule, error) {
+	schedule := &store.CronSchedule{}
+
+	if v, ok := scheduleObj["kind"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("patch.schedule.kind must be a string")
+		}
+		schedule.Kind = s
+	}
+	if v, ok := scheduleObj["expr"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("patch.schedule.expr must be a string")
+		}
+		schedule.Expr = s
+	}
+	if v, ok := scheduleObj["tz"]; ok {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("patch.schedule.tz must be a string")
+		}
+		schedule.TZ = s
+	}
+	if v, ok := scheduleObj["atMs"]; ok {
+		ms, err := parseCronMSValue(v, "patch.schedule.atMs")
+		if err != nil {
+			return nil, err
+		}
+		schedule.AtMS = ms
+	}
+	if v, ok := scheduleObj["everyMs"]; ok {
+		ms, err := parseCronMSValue(v, "patch.schedule.everyMs")
+		if err != nil {
+			return nil, err
+		}
+		schedule.EveryMS = ms
+	}
+
+	return schedule, nil
+}
+
+func parseCronMSValue(v interface{}, field string) (*int64, error) {
+	switch n := v.(type) {
+	case nil:
+		return nil, nil
+	case int:
+		ms := int64(n)
+		return &ms, nil
+	case int64:
+		ms := n
+		return &ms, nil
+	case float64:
+		ms := int64(n)
+		return &ms, nil
+	default:
+		return nil, fmt.Errorf("%s must be a number", field)
+	}
 }
 
 func (t *CronTool) handleRemove(args map[string]interface{}, agentID, userID string) *Result {

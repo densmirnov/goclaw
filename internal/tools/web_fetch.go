@@ -28,6 +28,7 @@ type WebFetchTool struct {
 	policy         string   // "allow_all" (default), "allowlist"
 	allowedDomains []string // domains when policy="allowlist" (supports "*.example.com")
 	mu             sync.RWMutex
+	client         *http.Client
 }
 
 // WebFetchConfig holds configuration for the web fetch tool.
@@ -56,6 +57,25 @@ func NewWebFetchTool(cfg WebFetchConfig) *WebFetchTool {
 		cache:          newWebCache(defaultCacheMaxEntries, ttl),
 		policy:         policy,
 		allowedDomains: cfg.AllowedDomains,
+		client: &http.Client{
+			Timeout: time.Duration(fetchTimeoutSeconds) * time.Second,
+			Transport: &http.Transport{
+				ForceAttemptHTTP2:   true,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     30 * time.Second,
+				TLSHandshakeTimeout: 15 * time.Second,
+			},
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= defaultFetchMaxRedirect {
+					return fmt.Errorf("stopped after %d redirects", defaultFetchMaxRedirect)
+				}
+				if err := CheckSSRF(req.URL.String()); err != nil {
+					return fmt.Errorf("redirect SSRF protection: %w", err)
+				}
+				return nil
+			},
+		},
 	}
 }
 
@@ -192,29 +212,7 @@ func (t *WebFetchTool) doFetch(ctx context.Context, rawURL, extractMode string, 
 	req.Header.Set("User-Agent", fetchUserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	redirectCount := 0
-	client := &http.Client{
-		Timeout: time.Duration(fetchTimeoutSeconds) * time.Second,
-		Transport: &http.Transport{
-			ForceAttemptHTTP2:   true,
-			MaxIdleConns:        10,
-			IdleConnTimeout:     30 * time.Second,
-			TLSHandshakeTimeout: 15 * time.Second,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			redirectCount++
-			if redirectCount > defaultFetchMaxRedirect {
-				return fmt.Errorf("stopped after %d redirects", defaultFetchMaxRedirect)
-			}
-			// Check SSRF on redirect target
-			if err := CheckSSRF(req.URL.String()); err != nil {
-				return fmt.Errorf("redirect SSRF protection: %w", err)
-			}
-			return nil
-		},
-	}
-
-	resp, err := client.Do(req)
+	resp, err := t.client.Do(req)
 	if err != nil {
 		return "", err
 	}

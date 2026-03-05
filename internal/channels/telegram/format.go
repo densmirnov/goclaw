@@ -30,6 +30,19 @@ var htmlToMdReplacers = []struct {
 	{regexp.MustCompile(`(?i)<a\s+href="([^"]+)"[^>]*>([\s\S]*?)</a>`), "[$2]($1)"},
 }
 
+var (
+	reStripHeaders     = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`)
+	reStripBlockquotes = regexp.MustCompile(`(?m)^>\s*(.*)$`)
+	reMarkdownLinks    = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reBoldAsterisks    = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reBoldUnderscores  = regexp.MustCompile(`__(.+?)__`)
+	reItalic           = regexp.MustCompile(`_([^_]+)_`)
+	reStrikethrough    = regexp.MustCompile(`~~(.+?)~~`)
+	reListItems        = regexp.MustCompile(`(?m)^[-*]\s+`)
+	reCodeBlock        = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
+	reInlineCode       = regexp.MustCompile("`([^`]+)`")
+)
+
 func htmlTagToMarkdown(text string) string {
 	for _, r := range htmlToMdReplacers {
 		text = r.re.ReplaceAllString(text, r.repl)
@@ -62,23 +75,22 @@ func markdownToTelegramHTML(text string) string {
 	text = inlineCodes.text
 
 	// Strip markdown headers
-	text = regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`).ReplaceAllString(text, "$1")
+	text = reStripHeaders.ReplaceAllString(text, "$1")
 
 	// Strip blockquotes
-	text = regexp.MustCompile(`(?m)^>\s*(.*)$`).ReplaceAllString(text, "$1")
+	text = reStripBlockquotes.ReplaceAllString(text, "$1")
 
 	// Escape HTML
 	text = escapeHTML(text)
 
 	// Convert markdown links
-	text = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`).ReplaceAllString(text, `<a href="$2">$1</a>`)
+	text = reMarkdownLinks.ReplaceAllString(text, `<a href="$2">$1</a>`)
 
 	// Bold
-	text = regexp.MustCompile(`\*\*(.+?)\*\*`).ReplaceAllString(text, "<b>$1</b>")
-	text = regexp.MustCompile(`__(.+?)__`).ReplaceAllString(text, "<b>$1</b>")
+	text = reBoldAsterisks.ReplaceAllString(text, "<b>$1</b>")
+	text = reBoldUnderscores.ReplaceAllString(text, "<b>$1</b>")
 
 	// Italic
-	reItalic := regexp.MustCompile(`_([^_]+)_`)
 	text = reItalic.ReplaceAllStringFunc(text, func(s string) string {
 		match := reItalic.FindStringSubmatch(s)
 		if len(match) < 2 {
@@ -88,10 +100,10 @@ func markdownToTelegramHTML(text string) string {
 	})
 
 	// Strikethrough
-	text = regexp.MustCompile(`~~(.+?)~~`).ReplaceAllString(text, "<s>$1</s>")
+	text = reStrikethrough.ReplaceAllString(text, "<s>$1</s>")
 
 	// List items
-	text = regexp.MustCompile(`(?m)^[-*]\s+`).ReplaceAllString(text, "• ")
+	text = reListItems.ReplaceAllString(text, "• ")
 
 	// Restore inline code
 	for i, code := range inlineCodes.codes {
@@ -120,8 +132,7 @@ type codeBlockMatch struct {
 }
 
 func extractCodeBlocks(text string) codeBlockMatch {
-	re := regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
-	matches := re.FindAllStringSubmatch(text, -1)
+	matches := reCodeBlock.FindAllStringSubmatch(text, -1)
 
 	codes := make([]string, 0, len(matches))
 	for _, match := range matches {
@@ -129,7 +140,7 @@ func extractCodeBlocks(text string) codeBlockMatch {
 	}
 
 	i := 0
-	text = re.ReplaceAllStringFunc(text, func(_ string) string {
+	text = reCodeBlock.ReplaceAllStringFunc(text, func(_ string) string {
 		placeholder := fmt.Sprintf("\x00CB%d\x00", i)
 		i++
 		return placeholder
@@ -144,8 +155,7 @@ type inlineCodeMatch struct {
 }
 
 func extractInlineCodes(text string) inlineCodeMatch {
-	re := regexp.MustCompile("`([^`]+)`")
-	matches := re.FindAllStringSubmatch(text, -1)
+	matches := reInlineCode.FindAllStringSubmatch(text, -1)
 
 	codes := make([]string, 0, len(matches))
 	for _, match := range matches {
@@ -153,7 +163,7 @@ func extractInlineCodes(text string) inlineCodeMatch {
 	}
 
 	i := 0
-	text = re.ReplaceAllStringFunc(text, func(_ string) string {
+	text = reInlineCode.ReplaceAllStringFunc(text, func(_ string) string {
 		placeholder := fmt.Sprintf("\x00IC%d\x00", i)
 		i++
 		return placeholder
@@ -298,12 +308,12 @@ func parseTableRow(line string) []string {
 // stripInlineMarkdown removes common inline markdown markers from text.
 // Used for table cells that render inside code blocks where formatting has no effect.
 var (
-	reStripBoldAsterisks   = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reStripBoldUnderscores = regexp.MustCompile(`__(.+?)__`)
-	reStripItalicAsterisk  = regexp.MustCompile(`\*([^*]+)\*`)
+	reStripBoldAsterisks    = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reStripBoldUnderscores  = regexp.MustCompile(`__(.+?)__`)
+	reStripItalicAsterisk   = regexp.MustCompile(`\*([^*]+)\*`)
 	reStripItalicUnderscore = regexp.MustCompile(`_([^_]+)_`)
-	reStripStrikethrough   = regexp.MustCompile(`~~(.+?)~~`)
-	reStripInlineCode      = regexp.MustCompile("`([^`]+)`")
+	reStripStrikethrough    = regexp.MustCompile(`~~(.+?)~~`)
+	reStripInlineCode       = regexp.MustCompile("`([^`]+)`")
 )
 
 func stripInlineMarkdown(s string) string {
