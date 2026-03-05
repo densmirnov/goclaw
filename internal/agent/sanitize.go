@@ -12,8 +12,8 @@
 //	     - collapseConsecutiveDuplicateBlocks()
 //
 // Additional Go-specific:
-//	  5. stripEchoedSystemMessages()       → strip hallucinated [System Message] blocks
-//	  6. stripGarbledToolXML()             → strip garbled XML from models like DeepSeek
+//  5. stripEchoedSystemMessages()       → strip hallucinated [System Message] blocks
+//  6. stripGarbledToolXML()             → strip garbled XML from models like DeepSeek
 package agent
 
 import (
@@ -40,6 +40,9 @@ func SanitizeAssistantContent(content string) string {
 
 	// 2. Strip downgraded tool call text ([Tool Call: ...], [Tool Result ...])
 	content = stripDowngradedToolCallText(content)
+
+	// 2b. Strip raw tool-call markers emitted as text by some OpenAI-compatible models.
+	content = stripRawToolCallMarkers(content)
 
 	// 3. Strip thinking/reasoning tags (<think>, <thinking>, <thought>, <antThinking>)
 	content = stripThinkingTags(content)
@@ -165,11 +168,34 @@ func stripDowngradedToolCallText(content string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
+// --- 2b. Raw tool-call marker text ---
+
+// Some providers/models can emit OpenAI-compat tool call delimiters literally in text:
+// <|toolcallssectionbegin|> ... <|toolcallssectionend|>
+// <|toolcallbegin|>, <|toolcallargumentbegin|>, <|toolcallend|>, etc.
+var (
+	toolCallsSectionPattern = regexp.MustCompile(`(?is)<\|toolcallssectionbegin\|>.*?<\|toolcallssectionend\|>`)
+	toolCallMarkerPattern   = regexp.MustCompile(`(?is)<\|tool(?:call|calls)[^|]*\|>`)
+)
+
+func stripRawToolCallMarkers(content string) string {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "<|toolcall") && !strings.Contains(lower, "<|toolcalls") {
+		return content
+	}
+
+	result := toolCallsSectionPattern.ReplaceAllString(content, "")
+	result = toolCallMarkerPattern.ReplaceAllString(result, "")
+	return strings.TrimSpace(result)
+}
+
 // --- 3. Thinking/reasoning tags ---
 
 // Matches TS stripThinkingTagsFromText() with strict mode.
 // Strips: <think>...</think>, <thinking>...</thinking>, <thought>...</thought>,
-//         <antThinking>...</antThinking>
+//
+//	<antThinking>...</antThinking>
+//
 // Go regexp doesn't support backreferences, so we use separate patterns.
 var thinkingTagPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?is)<think>.*?</think>`),
