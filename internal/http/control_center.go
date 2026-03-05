@@ -40,6 +40,11 @@ func (h *ControlCenterHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/admin/control-center/tasks/kanban", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleKanban))
 	mux.HandleFunc("POST /v1/admin/control-center/tasks/batch", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleTaskBatch))
 	mux.HandleFunc("GET /v1/admin/control-center/tasks/actions", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleTaskActions))
+	mux.HandleFunc("GET /v1/admin/control-center/governance", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleGovernance))
+	mux.HandleFunc("GET /v1/admin/control-center/knowledge", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleKnowledge))
+	mux.HandleFunc("GET /v1/admin/control-center/delegation-map", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleDelegationMap))
+	mux.HandleFunc("GET /v1/admin/control-center/cost", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleCost))
+	mux.HandleFunc("GET /v1/admin/control-center/health", requireRoleHTTP(h.token, permissions.RoleAdmin, h.handleHealthScore))
 }
 
 type ccAgentItem struct {
@@ -146,6 +151,16 @@ func blockedEscalationThreshold() time.Duration {
 		}
 	}
 	return time.Duration(sec) * time.Second
+}
+
+func estimatedUSDPer1kTokens() float64 {
+	v := 0.002
+	if raw := strings.TrimSpace(os.Getenv("GOCLAW_ESTIMATED_USD_PER_1K_TOKENS")); raw != "" {
+		if n, err := strconv.ParseFloat(raw, 64); err == nil && n > 0 {
+			v = n
+		}
+	}
+	return v
 }
 
 func (h *ControlCenterHandler) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -516,5 +531,253 @@ func (h *ControlCenterHandler) handleTaskActions(w http.ResponseWriter, r *http.
 		"actions": out,
 		"total":   len(out),
 		"limit":   limit,
+	})
+}
+
+func (h *ControlCenterHandler) handleGovernance(w http.ResponseWriter, r *http.Request) {
+	if h.traces == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tracing store is not available"})
+		return
+	}
+	traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 300, Offset: 0})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load governance data"})
+		return
+	}
+	accessViolations := 0
+	errorRuns := 0
+	for _, tr := range traces {
+		if tr.Status == store.TraceStatusError {
+			errorRuns++
+		}
+		l := strings.ToLower(tr.Error + " " + tr.Name)
+		if strings.Contains(l, "forbidden") || strings.Contains(l, "unauthorized") || strings.Contains(l, "policy") {
+			accessViolations++
+		}
+	}
+	alerts := make([]map[string]interface{}, 0, 4)
+	if accessViolations > 0 {
+		alerts = append(alerts, map[string]interface{}{
+			"type":   "access_violations",
+			"count":  accessViolations,
+			"level":  "high",
+			"status": "open",
+		})
+	}
+	if errorRuns > 0 {
+		alerts = append(alerts, map[string]interface{}{
+			"type":   "error_runs",
+			"count":  errorRuns,
+			"level":  "medium",
+			"status": "open",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"policy_alerts":      alerts,
+		"approval_queue":     []map[string]interface{}{},
+		"access_violations":  accessViolations,
+		"recent_error_runs":  errorRuns,
+		"sample_size_traces": len(traces),
+	})
+}
+
+func (h *ControlCenterHandler) handleKnowledge(w http.ResponseWriter, r *http.Request) {
+	if h.traces == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tracing store is not available"})
+		return
+	}
+	traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 200, Offset: 0})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge data"})
+		return
+	}
+	lastByAgent := map[string]time.Time{}
+	for _, tr := range traces {
+		if tr.AgentID == nil {
+			continue
+		}
+		k := tr.AgentID.String()
+		if lastByAgent[k].IsZero() || tr.CreatedAt.After(lastByAgent[k]) {
+			lastByAgent[k] = tr.CreatedAt
+		}
+	}
+	stale := 0
+	now := time.Now().UTC()
+	for _, ts := range lastByAgent {
+		if now.Sub(ts) > 7*24*time.Hour {
+			stale++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"sources": []map[string]interface{}{
+			{"name": "agent_runtime_traces", "freshness_hours": 1, "status": "fresh"},
+			{"name": "team_task_board", "freshness_hours": 1, "status": "fresh"},
+		},
+		"coverage_gaps": []map[string]interface{}{
+			{"type": "stale_agents_7d", "count": stale},
+		},
+		"agents_with_recent_activity": len(lastByAgent) - stale,
+		"agents_stale_activity":       stale,
+	})
+}
+
+func (h *ControlCenterHandler) handleDelegationMap(w http.ResponseWriter, r *http.Request) {
+	if h.teams == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "team store is not available"})
+		return
+	}
+	records, _, err := h.teams.ListDelegationHistory(r.Context(), store.DelegationHistoryListOpts{Limit: 500, Offset: 0})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load delegation map"})
+		return
+	}
+	type edge struct {
+		SourceAgentID  string `json:"source_agent_id"`
+		TargetAgentID  string `json:"target_agent_id"`
+		SourceAgentKey string `json:"source_agent_key,omitempty"`
+		TargetAgentKey string `json:"target_agent_key,omitempty"`
+		Count          int    `json:"count"`
+		Failures       int    `json:"failures"`
+		AvgDurationMS  int    `json:"avg_duration_ms"`
+	}
+	m := map[string]*edge{}
+	for _, r := range records {
+		k := r.SourceAgentID.String() + "->" + r.TargetAgentID.String()
+		item, ok := m[k]
+		if !ok {
+			item = &edge{
+				SourceAgentID:  r.SourceAgentID.String(),
+				TargetAgentID:  r.TargetAgentID.String(),
+				SourceAgentKey: r.SourceAgentKey,
+				TargetAgentKey: r.TargetAgentKey,
+			}
+			m[k] = item
+		}
+		item.Count++
+		item.AvgDurationMS += r.DurationMS
+		if r.Status == "failed" {
+			item.Failures++
+		}
+	}
+	out := make([]edge, 0, len(m))
+	for _, v := range m {
+		if v.Count > 0 {
+			v.AvgDurationMS = v.AvgDurationMS / v.Count
+		}
+		out = append(out, *v)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"edges": out,
+		"total": len(out),
+	})
+}
+
+func (h *ControlCenterHandler) handleCost(w http.ResponseWriter, r *http.Request) {
+	if h.traces == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tracing store is not available"})
+		return
+	}
+	traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 1000, Offset: 0})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load cost data"})
+		return
+	}
+	type row struct {
+		AgentID      string  `json:"agent_id"`
+		InputTokens  int     `json:"input_tokens"`
+		OutputTokens int     `json:"output_tokens"`
+		TotalTokens  int     `json:"total_tokens"`
+		EstCostUSD   float64 `json:"est_cost_usd"`
+	}
+	perAgent := map[string]*row{}
+	price := estimatedUSDPer1kTokens()
+	totalTokens := 0
+	for _, tr := range traces {
+		aid := "unassigned"
+		if tr.AgentID != nil {
+			aid = tr.AgentID.String()
+		}
+		item, ok := perAgent[aid]
+		if !ok {
+			item = &row{AgentID: aid}
+			perAgent[aid] = item
+		}
+		item.InputTokens += tr.TotalInputTokens
+		item.OutputTokens += tr.TotalOutputTokens
+		item.TotalTokens += tr.TotalInputTokens + tr.TotalOutputTokens
+		totalTokens += tr.TotalInputTokens + tr.TotalOutputTokens
+	}
+	out := make([]row, 0, len(perAgent))
+	for _, v := range perAgent {
+		v.EstCostUSD = float64(v.TotalTokens) / 1000.0 * price
+		out = append(out, *v)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"rows":                   out,
+		"total_tokens":           totalTokens,
+		"estimated_cost_usd":     float64(totalTokens) / 1000.0 * price,
+		"usd_per_1k_tokens_used": price,
+	})
+}
+
+func (h *ControlCenterHandler) handleHealthScore(w http.ResponseWriter, r *http.Request) {
+	score := 100
+	errors := 0
+	total := 0
+	blockedOverdue := 0
+	activeTasks := 0
+
+	if h.traces != nil {
+		if traces, err := h.traces.ListTraces(r.Context(), store.TraceListOpts{Limit: 300, Offset: 0}); err == nil {
+			total = len(traces)
+			for _, tr := range traces {
+				if tr.Status == store.TraceStatusError {
+					errors++
+				}
+			}
+		}
+	}
+	if h.teams != nil {
+		if teams, err := h.teams.ListTeams(r.Context()); err == nil {
+			for _, tm := range teams {
+				if tasks, err := h.teams.ListTasks(r.Context(), tm.ID, "priority", store.TeamTaskFilterAll, ""); err == nil {
+					for _, t := range tasks {
+						if t.Status == store.TeamTaskStatusCompleted {
+							continue
+						}
+						activeTasks++
+						if t.Status == store.TeamTaskStatusBlocked && t.BlockedAt != nil && time.Since(*t.BlockedAt) > blockedEscalationThreshold() {
+							blockedOverdue++
+						}
+					}
+				}
+			}
+		}
+	}
+	if total > 0 {
+		errorRate := float64(errors) / float64(total)
+		score -= int(errorRate * 60.0)
+	}
+	if activeTasks > 0 {
+		stuckRate := float64(blockedOverdue) / float64(activeTasks)
+		score -= int(stuckRate * 40.0)
+	}
+	if score < 0 {
+		score = 0
+	}
+	status := "healthy"
+	if score < 80 {
+		status = "degraded"
+	}
+	if score < 50 {
+		status = "critical"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"score":           score,
+		"status":          status,
+		"error_runs":      errors,
+		"trace_sample":    total,
+		"blocked_overdue": blockedOverdue,
+		"active_tasks":    activeTasks,
 	})
 }

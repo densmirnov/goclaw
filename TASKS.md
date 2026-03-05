@@ -28,11 +28,11 @@
 
 ## Итерация 3 (Enterprise)
 
-21. Добавить страницу `Governance` (policy alerts, approval queue, access violations).
-22. Добавить страницу `Knowledge` (источники, freshness, coverage gaps).
-23. Реализовать `Delegation Map` (граф передач задач между агентами).
-24. Добавить cost-аналитику по агентам/командам/каналам.
-25. Ввести health score роя (ошибки, latency, SLA, stuck tasks).
+21. [x] Добавить страницу `Governance` (policy alerts, approval queue, access violations).
+22. [x] Добавить страницу `Knowledge` (источники, freshness, coverage gaps).
+23. [x] Реализовать `Delegation Map` (граф передач задач между агентами).
+24. [x] Добавить cost-аналитику по агентам/командам/каналам.
+25. [x] Ввести health score роя (ошибки, latency, SLA, stuck tasks).
 26. Вынести тяжелые агрегаты в materialized views/rollups.
 27. Добавить фоновые обновления агрегатов и метрики свежести.
 28. Настроить алерты SLO (p95/error rate/queue age/cost anomalies).

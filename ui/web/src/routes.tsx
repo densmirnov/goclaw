@@ -90,6 +90,31 @@ const OperationsPage = lazy(() =>
     default: m.OperationsPage,
   })),
 );
+const GovernancePage = lazy(() =>
+  import("@/pages/governance/governance-page").then((m) => ({
+    default: m.GovernancePage,
+  })),
+);
+const KnowledgePage = lazy(() =>
+  import("@/pages/knowledge/knowledge-page").then((m) => ({
+    default: m.KnowledgePage,
+  })),
+);
+const DelegationMapPage = lazy(() =>
+  import("@/pages/delegation-map/delegation-map-page").then((m) => ({
+    default: m.DelegationMapPage,
+  })),
+);
+const CostAnalyticsPage = lazy(() =>
+  import("@/pages/cost-analytics/cost-analytics-page").then((m) => ({
+    default: m.CostAnalyticsPage,
+  })),
+);
+const SwarmHealthPage = lazy(() =>
+  import("@/pages/swarm-health/swarm-health-page").then((m) => ({
+    default: m.SwarmHealthPage,
+  })),
+);
 
 function PageLoader() {
   return (
@@ -196,6 +221,46 @@ export function AppRoutes() {
             element={
               <RequireRole minRole="operator">
                 <OperationsPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path={ROUTES.GOVERNANCE}
+            element={
+              <RequireRole minRole="admin">
+                <GovernancePage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path={ROUTES.KNOWLEDGE}
+            element={
+              <RequireRole minRole="admin">
+                <KnowledgePage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path={ROUTES.DELEGATION_MAP}
+            element={
+              <RequireRole minRole="admin">
+                <DelegationMapPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path={ROUTES.COST_ANALYTICS}
+            element={
+              <RequireRole minRole="admin">
+                <CostAnalyticsPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path={ROUTES.SWARM_HEALTH}
+            element={
+              <RequireRole minRole="admin">
+                <SwarmHealthPage />
               </RequireRole>
             }
           />

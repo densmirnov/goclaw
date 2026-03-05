@@ -20,6 +20,11 @@ import {
   Cpu,
   ArrowRightLeft,
   Workflow,
+  Scale,
+  Database,
+  Network,
+  Coins,
+  HeartPulse,
 } from "lucide-react";
 import { SidebarGroup } from "./sidebar-group";
 import { SidebarItem } from "./sidebar-item";
@@ -166,6 +171,46 @@ export function Sidebar({ collapsed }: SidebarProps) {
               to={ROUTES.OPERATIONS}
               icon={Workflow}
               label="Operations"
+              collapsed={collapsed}
+            />
+          )}
+          {canAdmin && (
+            <SidebarItem
+              to={ROUTES.GOVERNANCE}
+              icon={Scale}
+              label="Governance"
+              collapsed={collapsed}
+            />
+          )}
+          {canAdmin && (
+            <SidebarItem
+              to={ROUTES.KNOWLEDGE}
+              icon={Database}
+              label="Knowledge"
+              collapsed={collapsed}
+            />
+          )}
+          {canAdmin && (
+            <SidebarItem
+              to={ROUTES.DELEGATION_MAP}
+              icon={Network}
+              label="Delegation Map"
+              collapsed={collapsed}
+            />
+          )}
+          {canAdmin && (
+            <SidebarItem
+              to={ROUTES.COST_ANALYTICS}
+              icon={Coins}
+              label="Cost Analytics"
+              collapsed={collapsed}
+            />
+          )}
+          {canAdmin && (
+            <SidebarItem
+              to={ROUTES.SWARM_HEALTH}
+              icon={HeartPulse}
+              label="Swarm Health"
               collapsed={collapsed}
             />
           )}
