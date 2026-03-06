@@ -11,6 +11,31 @@ export function TokenForm({ onSubmit }: TokenFormProps) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function verifyStandaloneToken(userIdValue: string, tokenValue: string) {
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenValue}`,
+        "Content-Type": "application/json",
+        "X-GoClaw-User-Id": userIdValue,
+      },
+      // Deliberately invalid payload: valid auth reaches request validation and returns 400,
+      // invalid auth is rejected with 401 before validation.
+      body: JSON.stringify({ model: "default", messages: [] }),
+    });
+
+    if (res.status === 401) {
+      return false;
+    }
+
+    if (res.ok || res.status === 400) {
+      return true;
+    }
+
+    const health = await fetch("/health");
+    return health.ok;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!token.trim() || !userId.trim()) return;
@@ -34,10 +59,13 @@ export function TokenForm({ onSubmit }: TokenFormProps) {
 
       if (!res.ok) {
         // Standalone mode doesn't expose managed REST endpoints like /v1/agents.
-        // Fallback to /health so token login still works behind WS auth.
+        // Use chat-completions auth as the fallback because it exists in both modes.
         if (res.status === 404) {
-          const health = await fetch("/health");
-          if (health.ok) {
+          const standaloneOK = await verifyStandaloneToken(
+            userId.trim(),
+            token.trim(),
+          );
+          if (standaloneOK) {
             onSubmit(userId.trim(), token.trim());
             return;
           }
